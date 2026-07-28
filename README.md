@@ -1,5 +1,9 @@
 # pi-github-waves
 
+<p align="center">
+  <img src="docs/assets/banner.svg" width="100%" alt="Dependency wave graph: issues grouped into waves, where ready issues flow downstream to blocked issues">
+</p>
+
 Dependency-driven GitHub Issue orchestration for [pi](https://github.com/badlogic/pi-mono): validate explicit work, calculate safe parallelism, run isolated agents, and release downstream work only when its own blockers are merged.
 
 > [!IMPORTANT]
@@ -78,7 +82,13 @@ A downstream branch should not be based on an unmerged sibling branch. Before ev
 
 ### Waves are not runtime barriers
 
-Topological levels are useful for explaining a plan, but scheduling is dependency-by-dependency. Consider this graph, where arrows mean **blocks**:
+Topological levels are useful for explaining a plan, but scheduling is dependency-by-dependency. An issue is released the moment every one of its **own** blockers is merged — not when an arbitrary phase completes:
+
+<p align="center">
+  <img src="docs/assets/wave-release.svg" width="100%" alt="A downstream issue stays blocked until each of its own blockers is merged, then it is released">
+</p>
+
+Consider this graph, where arrows mean **blocks**:
 
 ```mermaid
 graph LR
