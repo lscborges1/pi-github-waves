@@ -217,7 +217,7 @@ All core diagnostics safe within a phase are aggregated. Later phases never run 
 | `number: "3"` | 0 | `invalid_type` | null | once for field |
 | `number: 0` or `3.5` | 1 | `invalid_issue_number` | null | once for field |
 | empty node ID/title/URL | 1 | `invalid_identifier` | node number if safely valid, else null | once per field path |
-| non-array completion evidence | 0 | `invalid_type` | node number if safely valid, else null | once per field |
+| non-array completion evidence | 0 | `invalid_type` | null | once per field |
 | PR evidence `0`/`1.5` | 1 | `completion_evidence_invalid` | node number | once per invalid array position |
 | empty OID | 1 | `completion_evidence_invalid` | node number | once per invalid array position |
 | duplicate node ID | 1 | `duplicate_node_id` | null | once per duplicated ID group |
@@ -386,7 +386,7 @@ Core messages and issue-number attribution are fixed:
 | `boundary_limit_exceeded` | null | `Boundary issue limit exceeded: {count} > 200.` |
 | `dependency_limit_exceeded` | blocked issue | `Dependency limit exceeded for issue #{n}: {count} > 100.` |
 | `concurrency_out_of_range` | null | `maxConcurrency must be an integer from 1 through 8: {value}.` |
-| `invalid_type` | node issue when safely known, otherwise null | `Invalid runtime type at {field}: expected {expected}, received {actual}.` |
+| `invalid_type` | null in Phase 0 | `Invalid runtime type at {field}: expected {expected}, received {actual}.` |
 | `invalid_identifier` | node issue when known, otherwise null | `Invalid non-empty identifier for {field}: {jsonValue}.` |
 | `invalid_issue_number` | null | `Issue number must be a positive safe integer: {jsonValue}.` |
 | `duplicate_node_id` | null | `Duplicate node ID: {jsonString}.` |
@@ -428,7 +428,17 @@ Messages are developer-facing English constants generated from deterministic tem
 `canonicalizePlan(plan)` returns UTF-8 JSON. Runtime `WavePlanV1` objects are closed schemas: unknown properties at any depth are rejected, not retained. Before serialization it performs two deterministic checks:
 
 1. A depth-first walk visits object keys in Unicode code-point order and array indexes ascending. It tracks an ancestor `WeakSet`; the first repeated ancestor reference throws `TypeError("Cannot canonicalize plan at {path}: cyclic reference.")`. At the first prohibited value it throws `TypeError("Cannot canonicalize plan at {path}: prohibited {reason}.")`, where reason is exactly `undefined`, `non-finite number`, `negative zero`, `bigint`, `symbol`, `function`, `non-plain object`, `Map`, `Set`, or `Date`.
-2. The validated acyclic JSON value is checked against the complete **structural** `WavePlanV1` runtime schema in declared interface-field order, recursively through selected, boundary, edges, levels/batches, diagnostics, and completion evidence. Structural validation includes closed fields, primitive/enum/null domains, positive safe integers, schema version 1, concurrency range, unique selected/boundary node IDs and issue numbers, selected/boundary disjointness, edge endpoint presence, a 64-character lowercase hexadecimal non-empty fingerprint, and every array ordering/uniqueness rule declared in this spec. It does not recalculate graph semantics, dispositions, `runnable`, or the fingerprint. Arrays not already in canonical order are rejected with expected label `canonical {field} order`; `canonicalizePlan` does not silently sort caller-supplied plans. Required fields are checked first in declaration order. Then additional keys are checked in Unicode code-point order; the first extra key throws `TypeError("Cannot canonicalize plan at {path}: malformed WavePlanV1; expected no additional property.")`. The first missing/wrong required field throws `TypeError("Cannot canonicalize plan at {path}: malformed WavePlanV1; expected {expected}.")`, using the same canonical paths and expected labels as structural validation.
+2. The validated acyclic JSON value is checked against the complete **structural** `WavePlanV1` runtime schema in declared interface-field order, recursively through selected, boundary, edges, levels/batches, diagnostics, and completion evidence. Structural validation includes closed fields, primitive/enum/null domains, positive safe integers, schema version 1, concurrency range, unique selected/boundary node IDs and issue numbers, selected/boundary disjointness, edge endpoint presence, a 64-character lowercase hexadecimal fingerprint, and every array ordering/uniqueness rule declared in this spec. It does not recalculate graph semantics, dispositions, `runnable`, or the fingerprint. Composite entries use expected label `plain object`; required fields use their scalar/object/array label; fingerprint format uses `64-character lowercase hexadecimal string`; a duplicate-bearing array uses `unique values`; and any array violating its declared comparator uses `canonical order`. The failing JSONPath identifies which array. `canonicalizePlan` does not silently sort or deduplicate caller-supplied plans. Required fields are checked first in declaration order. Then additional keys are checked in Unicode code-point order; the first extra key throws `TypeError("Cannot canonicalize plan at {path}: malformed WavePlanV1; expected no additional property.")`. The first missing/wrong required field throws `TypeError("Cannot canonicalize plan at {path}: malformed WavePlanV1; expected {expected}.")`, using the same canonical paths and expected labels as structural validation.
+
+Representative exact failures:
+
+```text
+Cannot canonicalize plan at $.config: malformed WavePlanV1; expected plain object.
+Cannot canonicalize plan at $.selected[0].extra: malformed WavePlanV1; expected no additional property.
+Cannot canonicalize plan at $.selected: malformed WavePlanV1; expected canonical order.
+Cannot canonicalize plan at $.fingerprint: malformed WavePlanV1; expected 64-character lowercase hexadecimal string.
+Cannot canonicalize plan at $.selected[0].disposition: malformed WavePlanV1; expected ready | blocked_selected | blocked_external | blocked_invalid_selected | completed_preexisting | invalid.
+```
 
 It then serializes with:
 
