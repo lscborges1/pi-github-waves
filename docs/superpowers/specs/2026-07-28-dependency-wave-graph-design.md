@@ -62,6 +62,14 @@ interface ActiveGraph {
   outgoing: ReadonlyMap<string, readonly string[]>;
 }
 
+// ActiveGraph preconditions for the SCC helper:
+// - nodeIds are unique and sorted by issue number then ID;
+// - issueNumberById has exactly one entry for every nodeId and no extras;
+// - outgoing has exactly one key for every nodeId, including empty arrays;
+// - every neighbor belongs to nodeIds;
+// - neighbor arrays are unique and sorted by issue number then ID;
+// - no self-edge or duplicate edge exists.
+
 interface GraphMetrics { nodeVisits: number; edgeVisits: number; }
 
 interface StronglyConnectedResult {
@@ -75,7 +83,7 @@ export function findStronglyConnectedComponents(
 ): StronglyConnectedResult;
 ```
 
-These helpers are source-level exports only. `validateGraph` returns all row-ordered errors and never a partial graph. `findStronglyConnectedComponents` requires a validated active graph, does not fail for graph data, and returns components sorted by their lowest issue number; node IDs inside each component follow issue-number/ID order. `ActiveGraph.issueNumberById` supplies ordering context explicitly.
+These helpers are source-level exports only. `validateGraph` returns all row-ordered errors and never a partial graph. `findStronglyConnectedComponents` requires an `ActiveGraph` satisfying every listed precondition; violating them is programmer error and may throw. It returns components sorted by their lowest issue number, with node IDs inside each component in issue-number/ID order. `componentByNodeId` contains every active node exactly once, no extras, and maps to the zero-based index of that node's component in the **final sorted** `components` array; indexes are remapped after sorting. `ActiveGraph.issueNumberById` supplies ordering context explicitly.
 
 ## Contracts
 
@@ -228,7 +236,7 @@ First scan all nodes and record scalar validity by original node index. Emit one
 - Selected IDs are unique and resolve to nodes.
 - Selected and boundary statuses follow the role table.
 
-Duplicate errors emit once per duplicated value group regardless of group size. Missing selected IDs emit once per distinct missing ID. Status errors emit once per node.
+Row 2 computes duplicate node-ID and issue-number groups first, then still performs every other Row 2 check with ambiguity rules. A selected ID resolves uniquely only when it maps to exactly one node and that node's issue number maps to exactly one node. `duplicate_selected_id.issueNumber` is that unique number only under this rule; otherwise null. A selected ID mapping to zero nodes emits `selected_node_missing`; one mapping to multiple nodes is not also “missing.” Selected status is checked only for uniquely resolved selected nodes. Boundary status is checked only for nodes with unique ID and unique issue number; ambiguous nodes already have duplicate errors. Duplicate errors emit once per duplicated value group regardless of group size. Missing selected IDs emit once per distinct missing ID. Status errors emit once per safely attributable node.
 
 ### Row 3: edges
 
@@ -280,7 +288,7 @@ Errors are sorted by:
 3. code in Unicode code-point order;
 4. stable details string.
 
-The stable details string sorts keys by Unicode code-point order and joins `key=value` pairs with `;`. Number values use base-10 `String(value)` and strings use `JSON.stringify(value)`. All numeric details have already been normalized, so this serialization never receives non-finite numbers.
+The stable details string sorts keys by Unicode code-point order and joins `key=value` pairs with `;`. Stable details strings are compared lexicographically by Unicode code-point order. Number values use base-10 `String(value)` and strings use `JSON.stringify(value)`. All numeric details have already been normalized, so this serialization never receives non-finite numbers.
 
 ## Completion barrier and relevant graph
 
@@ -393,7 +401,7 @@ Programmer violations outside declared TypeScript shapes may throw naturally. Al
 
 ### Validation
 
-Test every error code, validation-row short circuit, aggregation, ordering, and cardinality. Include 0/1/50/51 selected IDs, 200/201 boundary nodes, 10,000/10,001 edges, concurrency 1/8/9, duplicate groups of 2/3/4, overlapping edge failures, unreachable boundaries, and multiple errors in one row.
+Test every error code, validation-row short circuit, aggregation, ordering, and cardinality. Golden Row 2 fixtures include a duplicated node ID also duplicated in `selectedIds`, duplicated issue numbers on distinct IDs, missing selected IDs, and mixed role-status failures; they assert exact null/number attribution. Include 0/1/50/51 selected IDs, 200/201 boundary nodes, 10,000/10,001 edges, concurrency 1/8/9, duplicate groups of 2/3/4, overlapping edge failures, unreachable boundaries, and multiple errors in one row.
 
 ### Planning
 
@@ -401,15 +409,24 @@ Test empty graph, single ready, complete-only, chains, diamonds, disconnected se
 
 ### Cycles
 
-Test selected cycles, boundary cycles, selected-to-boundary cycles, cycle dependents, unaffected siblings, and cycles hidden upstream of completed barriers.
+Test selected cycles, boundary cycles, selected-to-boundary cycles, cycle dependents, unaffected siblings, and cycles hidden upstream of completed barriers. A direct SCC-helper golden fixture asserts final sorted components and remapped `componentByNodeId` indexes.
 
 ### Determinism and complexity
 
 Property tests permute nodes, edges, and selected IDs and require deep-equal output.
 
-`build-dependency-wave-graph.ts` has a named source-level export `buildDependencyWaveGraphInternal(input, metrics?)`, absent from `index.ts` and package exports. `metrics` is a test-only mutable `{ nodeVisits: number; edgeVisits: number }`; the public wrapper omits it.
+`build-dependency-wave-graph.ts` has a named source-level export `buildDependencyWaveGraphInternal(input, metrics?)`, absent from `index.ts` and package exports. `metrics` is a test-only mutable `{ nodeVisits: number; edgeVisits: number }`; the public wrapper omits it. A test caller must initialize both counters to zero. The internal function does not reset them and accumulates increments into the supplied object.
 
-Metrics cover planning after successful validation and sorting, not validation or sort comparisons. `V = nodes.length` and `E = edges.length` in the validated input. Increment `nodeVisits` once for each node loop-body execution in relevant-graph discovery, Tarjan, condensation construction, topological propagation, classification, and level construction. Increment `edgeVisits` once for each edge loop-body execution in those same passes. Nested work that does not consume another node/edge does not increment. Synthetic DAG tests assert both counters separately are at most `12 * (V + E)`. This generous fixed bound detects per-selected traversals without constraining constant-pass implementation details.
+Metrics cover planning after successful validation and sorting, not validation or sort comparisons. `V = nodes.length` and `E = edges.length` in the validated input.
+
+- Relevant discovery: increment node once per dequeued node and edge once per inspected incoming edge.
+- Tarjan: increment node once when first entering a node and edge once per outgoing edge examined.
+- Condensation: increment node by a component's node count when processing that component and edge once per original active edge consumed.
+- Topological propagation: increment node by component node count when processing it and edge once per condensation edge consumed.
+- Classification: increment node once per selected node; increment edge once per direct incoming edge consulted.
+- Level construction: increment node once per included selected node and edge once per selected-blocker relation consulted.
+
+No other operation increments metrics. Synthetic DAG tests assert both final counters separately are at most `12 * (V + E)`, starting from zero. This generous fixed bound detects per-selected traversals without constraining constant-pass implementation details.
 
 ### Immutability
 
