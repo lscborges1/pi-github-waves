@@ -307,7 +307,7 @@ All output edges are retained for explanation, including edges incident to compl
 
 ## Deterministic normalization
 
-After validation:
+After validation, all ID tie-breaks use one shared `compareOpaqueId(a, b)`: return 0 when equal; otherwise return -1 when ECMAScript `a < b` is true and 1 otherwise. This is lexicographic UTF-16 code-unit order, performs no locale comparison or normalization, and is used everywhere this spec says “then ID.”
 
 - selected and boundary nodes sort by issue number, then ID;
 - edges collapse is unnecessary because duplicates were rejected;
@@ -389,7 +389,7 @@ Batches estimate parallelism; they are not runtime barriers.
 - no selected node is `invalid`, `blocked_invalid_selected`, or `blocked_external`; and
 - at least one selected node exists.
 
-A selection containing only `completed_preexisting` nodes is runnable with empty levels. An empty selection is structurally valid, returns a planned graph, and is not runnable.
+A selection containing only `completed_preexisting` nodes is runnable with empty levels. Empty `selectedIds` with empty `nodes` is structurally valid, returns a planned non-runnable empty graph, and has empty levels. Empty `selectedIds` with any nodes fails Row 4 because every node is an unreachable boundary.
 
 ## Immutability and failures
 
@@ -405,7 +405,7 @@ Test every error code, validation-row short circuit, aggregation, ordering, and 
 
 ### Planning
 
-Test empty graph, single ready, complete-only, chains, diamonds, disconnected selected components, selected invalid propagation, unresolved external propagation, mixed invalid/external precedence, direct blockers, transitive blockers, and completed barriers.
+Test empty selection with empty nodes as planned/non-runnable, empty selection with non-empty nodes as unreachable-boundary invalid input, single ready, complete-only, chains, diamonds, disconnected selected components, selected invalid propagation, unresolved external propagation, mixed invalid/external precedence, direct blockers, transitive blockers, and completed barriers.
 
 ### Cycles
 
@@ -415,7 +415,16 @@ Test selected cycles, boundary cycles, selected-to-boundary cycles, cycle depend
 
 Property tests permute nodes, edges, and selected IDs and require deep-equal output.
 
-`build-dependency-wave-graph.ts` has a named source-level export `buildDependencyWaveGraphInternal(input, metrics?)`, absent from `index.ts` and package exports. `metrics` is a test-only mutable `{ nodeVisits: number; edgeVisits: number }`; the public wrapper omits it. A test caller must initialize both counters to zero. The internal function does not reset them and accumulates increments into the supplied object.
+`build-dependency-wave-graph.ts` has this named source-level export, absent from `index.ts` and package exports:
+
+```ts
+export function buildDependencyWaveGraphInternal(
+  input: DependencyGraphInput,
+  metrics?: GraphMetrics,
+): DependencyGraphOutcome;
+```
+
+The public `buildDependencyWaveGraph(input)` returns exactly `buildDependencyWaveGraphInternal(input)` with no metrics; outcomes are otherwise identical. `metrics` is a test-only mutable `{ nodeVisits: number; edgeVisits: number }`. A test caller must initialize both counters to zero. The internal function does not reset them and accumulates increments into the supplied object.
 
 Metrics cover planning after successful validation and sorting, not validation or sort comparisons. `V = nodes.length` and `E = edges.length` in the validated input.
 
