@@ -137,7 +137,9 @@ The command performs one planning pass and returns. It does not poll.
 
 ## Exact ticket grammar
 
-The parser reads the GitHub issue body as UTF-8 Markdown. A body larger than 128 KiB fails validation.
+The parser reads the GitHub issue body as UTF-8 CommonMark 0.31.2 using `mdast-util-from-markdown`; that library's AST is the normative parse. GitHub extensions such as tables, task-list metadata, autolinks, and strikethrough are not enabled. A body larger than 128 KiB fails validation.
+
+ATX headings are `heading` nodes with `depth: 2`. A required heading must contain text nodes only. Sections are slices of root-level nodes between those headings. HTML comments are root-level `html` nodes matching `<!--(?:.|\n)*?-->`; they are removed for emptiness checks. Unterminated comments remain content. Nodes nested under `blockquote` or `code` are never headings, list evidence, or dependency declarations. List evidence is any `listItem` descendant of a root-level `list` node in the section. Dependency declarations must be one root-level `paragraph` whose children are text nodes only; soft line endings are normalized to one ASCII space. Any other non-comment root child makes the declaration malformed. These AST rules, rather than rendered Markdown, are normative.
 
 ### Required headings
 
@@ -165,16 +167,11 @@ The parser reports errors as `{ issueNumber, code, section?, line?, message }` w
 
 ### Eligibility
 
-Every selected issue must:
+Every selected issue must exist and be readable. A selected issue that already satisfies the completed-blocker rule is exempt from body and label validation because it will never be dispatched. Every other selected issue must be open, pass the complete ticket-body contract, have exactly one label named `agent: suitable`, and have neither `agent: not suitable` nor `agent: review required`; label comparisons are case-insensitive after trimming ASCII whitespace.
 
-- exist and be readable;
-- be open, unless it already satisfies the completed-blocker rule below;
-- have exactly one label named `agent: suitable`, compared case-insensitively;
-- not have labels `agent: not suitable` or `agent: review required`, compared case-insensitively.
+A selected issue that is closed but does not satisfy the completed-blocker rule is invalid. Boundary blockers need not have agent labels or pass the ticket-body contract because this planner will not dispatch them. Their bodies are read only to resolve fallback dependencies when native dependency data is absent.
 
-Boundary blockers need not have agent labels or pass the ticket-body contract because this planner will not dispatch them. Their bodies are read only to resolve fallback dependencies when native dependency data is absent.
-
-Any error on a selected issue makes the whole `PlanResult` non-runnable. Valid selected siblings never form a partial runnable plan.
+Any error on a selected issue makes the whole `PlanResult` non-runnable. Invalid and missing selected entries remain in the result with explicit dispositions; valid selected siblings never form a partial runnable plan.
 
 ## Dependency grammar
 
@@ -205,8 +202,8 @@ Canonical dependency arrays are unique and numerically sorted.
 For every selected or recursively discovered boundary issue:
 
 1. Fetch native GitHub `blocked by` dependencies.
-2. Parse the body declaration if the issue has the required Dependencies heading; for boundary issues without that heading, treat the fallback as absent rather than invalid.
-3. If the native set is non-empty, use it. If the body set is also non-empty and differs, return `dependency_source_mismatch`.
+2. Parse the body declaration if the issue has the required Dependencies heading; record both declaration presence and its canonical set. For boundary issues without that heading, the fallback is absent rather than invalid.
+3. If the native set is non-empty, use it. If a body declaration is present—including explicit `None`/`Nenhuma`—its set must equal the native set or planning returns `dependency_source_mismatch`.
 4. If the native set is empty and a body declaration exists, use the body set.
 5. If both are empty/absent, the issue has no blockers.
 
@@ -214,7 +211,9 @@ A native cross-repository dependency is rejected because the first version suppo
 
 ### Recursive boundary traversal
 
-Starting with selected issues, the planner breadth-first fetches every direct blocker, then every blocker's blockers, until no unseen blocker remains. It deduplicates by immutable GitHub node ID. The 200-boundary-node limit applies before fetching the next node; exceeding it fails the plan.
+Starting with selected issues, the planner breadth-first fetches every direct blocker, then every blocker's blockers, until no unseen blocker remains. Each breadth is queued by ascending issue number, with immutable node ID as the tie-breaker. Selected nodes rediscovered as blockers are not boundary nodes and do not count toward the limit. Each distinct non-selected node counts exactly once.
+
+After normalizing one issue's dependency response, the planner computes how many unseen non-selected nodes it would add. If the total would exceed 200, it adds none of those new nodes, stops traversal, and returns `boundary_limit_exceeded` with the parent issue and attempted total. Already fetched data remains available for diagnostics, but the result is non-runnable.
 
 The complete reachable graph is used for cycle detection. A cycle anywhere reachable from a selected issue fails planning, including cycles composed only of boundary nodes. Boundary nodes are never added to the selected execution set.
 
@@ -263,59 +262,107 @@ Levels are a visualization, not global barriers. The plan explicitly states that
 
 ## Canonical data contracts
 
-### Ports
-
 ```ts
+type IssueState = "OPEN" | "CLOSED";
+type DependencySource = "native" | "body";
+type SelectedDisposition =
+  | "ready" | "blockedSelected" | "blockedExternal"
+  | "completedPreexisting" | "invalid" | "missing" | "closedUncompleted";
+
+type ErrorCode =
+  | "issue_missing" | "issue_unreadable" | "issue_closed_uncompleted"
+  | "missing_section" | "duplicate_section" | "empty_section" | "missing_list_item"
+  | "dependency_malformed" | "dependency_self_reference"
+  | "dependency_cross_repository" | "dependency_source_mismatch"
+  | "boundary_limit_exceeded" | "dependency_cycle" | "external_blocker_open"
+  | "label_missing" | "label_conflict";
+
+type WarningCode = "duplicate_input" | "duplicate_dependency";
+
+interface ValidationMessage {
+  issueNumber: number | null;
+  code: ErrorCode | WarningCode;
+  section: string | null;
+  line: number | null;
+  message: string;
+}
+
+interface RepositorySnapshot {
+  nodeId: string; owner: string; name: string; remoteUrl: string; defaultBranch: string;
+}
+interface GitRepository {
+  commonDir: string; worktreeRoot: string; originUrl: string;
+}
+interface IssueSnapshot {
+  nodeId: string; number: number; title: string; url: string; state: IssueState;
+  labels: string[]; updatedAt: string; body: string; bodySha256: string;
+}
+interface DependencyRef {
+  repositoryNodeId: string; issueNodeId: string; number: number;
+}
+interface PullRequestSnapshot {
+  nodeId: string; number: number; url: string; state: "OPEN" | "CLOSED" | "MERGED";
+  baseBranch: string; mergedAt: string | null; mergeCommitOid: string | null;
+  closesIssue: boolean;
+}
+interface CompletionEvidence {
+  completed: boolean;
+  pullRequests: Array<{
+    number: number; url: string; mergedAt: string;
+    mergeCommitOid: string; baseBranch: string; reachable: boolean;
+  }>;
+}
+interface PlannedIssue {
+  number: number; nodeId: string | null; title: string | null; url: string | null;
+  state: IssueState | null; labels: string[]; updatedAt: string | null;
+  bodySha256: string | null; dependencies: number[]; dependencySource: DependencySource | null;
+  completion: CompletionEvidence; disposition: SelectedDisposition;
+}
+interface PlannedBoundaryIssue {
+  number: number; nodeId: string | null; title: string | null; url: string | null;
+  state: IssueState | null; updatedAt: string | null; bodySha256: string | null;
+  dependencies: number[]; dependencySource: DependencySource | null;
+  completion: CompletionEvidence;
+}
+
 interface GitHubReadPort {
   getRepository(): Promise<RepositorySnapshot>;
   getIssue(number: number): Promise<IssueSnapshot>;
   getBlockedBy(issueNodeId: string): Promise<DependencyRef[]>;
   getClosingPullRequests(issueNodeId: string): Promise<PullRequestSnapshot[]>;
 }
-
 interface GitReadPort {
   discover(): Promise<GitRepository>;
   fetchDefaultBranch(branch: string): Promise<{ tipOid: string }>;
   isAncestor(ancestorOid: string, descendantOid: string): Promise<boolean>;
 }
+interface ConfigPort { load(): Promise<{ schemaVersion: 1; maxConcurrency: number }>; }
 
-interface ConfigPort {
-  load(): Promise<PlannerConfigV1>;
-}
-```
-
-All port methods either return the declared immutable value or throw a typed adapter error: `not_authenticated`, `forbidden`, `not_found`, `rate_limited`, `network`, `invalid_response`, `unsupported_repository`, or `git_failed`. Rate-limit errors include reset/retry metadata when supplied by GitHub. The planner does not retry in this slice.
-
-### Plan result
-
-```ts
 interface PlanResultV1 {
-  plannerSchemaVersion: 1;
-  runnable: boolean;
-  repository: {
-    owner: string;
-    name: string;
-    remoteUrl: string;
-    defaultBranch: string;
-    defaultBranchTipOid: string;
-  };
+  plannerSchemaVersion: 1; runnable: boolean;
+  repository: RepositorySnapshot & { defaultBranchTipOid: string };
   config: { schemaVersion: 1; maxConcurrency: number };
-  inputOrder: number[];
-  selected: PlannedIssue[];
-  boundary: PlannedBoundaryIssue[];
-  edges: Array<{ blocker: number; blocked: number; source: "native" | "body" }>;
+  inputOrder: number[]; selected: PlannedIssue[]; boundary: PlannedBoundaryIssue[];
+  edges: Array<{ blocker: number; blocked: number; source: DependencySource }>;
   levels: Array<{ level: number; batches: number[][] }>;
-  warnings: ValidationMessage[];
-  errors: ValidationMessage[];
-  fingerprint: string;
+  warnings: ValidationMessage[]; errors: ValidationMessage[]; fingerprint: string;
 }
+
+type FatalCode =
+  | "invalid_command" | "config_invalid" | "project_untrusted"
+  | "not_authenticated" | "forbidden" | "rate_limited" | "network"
+  | "invalid_response" | "unsupported_repository" | "git_failed" | "cancelled";
+type CommandOutcome =
+  | { kind: "planned"; plan: PlanResultV1 }
+  | { kind: "fatal"; code: FatalCode; message: string; retryAfterSeconds: number | null }
+  | { kind: "cancelled"; message: string };
 ```
 
-`PlannedIssue` includes immutable node ID, number, title, URL, state, label names, `updatedAt`, body SHA-256, canonical dependencies, completion evidence, and disposition (`ready`, `blockedSelected`, `blockedExternal`, or `completedPreexisting`). Boundary entries include the same identity/dependency/completion fields but no ticket validation fields.
+`getIssue` may throw `not_found`; the application converts it to `issue_missing` for a selected number or `issue_unreadable` for a referenced boundary number and creates the corresponding null-field placeholder. `forbidden` on an individual issue is converted to `issue_unreadable`. All other adapter errors produce `CommandOutcome.kind = "fatal"` and no partial plan. Command/config/trust failures and cancellation also return without a `PlanResultV1`.
 
-The fingerprint is SHA-256 over canonical JSON of the complete result excluding `fingerprint`, warnings, errors, and `inputOrder`. Object keys are lexicographically sorted; arrays retain declared semantic order, while every set-like array is sorted before construction. Timestamps use GitHub's normalized UTC RFC 3339 strings.
+Canonical ordering is exhaustive: selected and boundary arrays by issue number; labels by Unicode code-point order after normalization; dependencies numerically; completion PRs by PR number then node ID; edges by blocker, blocked, then source; levels numerically; batches in level order with numbers ascending; validation messages by issue number (`null` first), code, section, line, then message. GitHub timestamps are normalized UTC RFC 3339 strings.
 
-No plan is persisted in this slice. The result exists in the command response and full-output temporary file only. Therefore there is no “current plan” ambiguity or approval reconstruction yet.
+The fingerprint is SHA-256 over canonical JSON of the complete result excluding `fingerprint`, warnings, errors, and `inputOrder`. Object keys are lexicographically sorted. Nulls are retained. No plan is persisted in this slice; therefore there is no current-plan or approval state.
 
 ## Adapter implementation constraints
 
@@ -343,13 +390,12 @@ Errors are grouped by issue and stable error code. `runnable` is true only when 
 
 ## Error handling
 
-- Invalid command tokens fail before repository/API access.
-- Invalid config fails before GitHub access.
-- Unsupported repository or auth failure stops planning.
-- 404 for a selected or blocker issue is an error; private inaccessible blockers are not treated as absent.
-- Network, rate-limit, API-schema, fetch, or ancestry failures stop planning with a typed error and no partial `runnable` result.
-- Ticket and graph validation collects all errors within input/traversal limits.
-- Ctrl+C cancels in-flight `gh`/Git processes using the extension abort signal and returns cancelled.
+- Invalid command, invalid config, and project-trust rejection return fatal/cancelled outcomes before repository API access.
+- Unsupported repository, repository-level 404/403, and auth failure are fatal.
+- A selected issue 404 and a referenced blocker 404/403 are reportable validation messages with placeholder entries; inaccessible blockers are not treated as absent.
+- Network, rate-limit, API-schema, fetch, or ancestry failures are fatal and return no partial plan.
+- Ticket and graph validation collects all reportable errors within input/traversal limits.
+- Ctrl+C cancels in-flight `gh`/Git processes using the extension abort signal and returns `{ kind: "cancelled" }`.
 - Temporary full-output files are mode `0600` and contain no credentials.
 
 ## Security
@@ -393,6 +439,17 @@ A temporary Git repository and fake `gh`/`git` executables exercise:
 - deterministic repeated output and fingerprint;
 - output truncation to a mode-0600 file;
 - successful command return after exactly one planning pass.
+
+## Implementation milestones within this slice
+
+One implementation plan should stage the work so each milestone has an executable test boundary:
+
+1. **Pure contracts and parsing:** protocol constants, command/config parsing, CommonMark ticket/dependency parsing, canonical JSON, and unit tests.
+2. **Pure graph application:** snapshots, recursive traversal over fake ports, completion evidence, cycle/level calculation, outcomes, fingerprints, and unit tests.
+3. **Read adapters:** Git/GitHub CLI adapters, remote/auth discovery, pagination, fetch/ancestry checks, typed errors, and contract tests.
+4. **pi package surface:** extension command, trust/fetch confirmation, renderer/truncation, skill, and integration tests against fake executables.
+
+No milestone introduces dispatch or remote writes. The plan may split these milestones into smaller tasks, but must preserve their dependency order.
 
 ## Acceptance criteria
 
