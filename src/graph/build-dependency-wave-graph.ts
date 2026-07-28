@@ -22,10 +22,10 @@ function selectedClassification(
   graph: ValidatedGraph,
   stronglyConnected: ReturnType<typeof findStronglyConnectedComponents>,
   facts: ReturnType<typeof propagateComponentFacts>["factsByComponent"],
+  selected: ReadonlySet<string>,
   id: string,
   metrics?: GraphMetrics,
 ): Omit<Classification, "level"> {
-  const selected = new Set(graph.selectedIds);
   const node = graph.nodesById.get(id)!;
   const direct = graph.incoming.get(id) ?? [];
   if (metrics) {
@@ -170,20 +170,21 @@ export function buildDependencyWaveGraphInternal(
     metrics,
   );
 
+  const selectedSet = new Set(graph.selectedIds);
   const classifications = new Map<string, Classification>();
   for (const id of graph.selectedIds) {
     const base = selectedClassification(
       graph,
       stronglyConnected,
       propagated.factsByComponent,
+      selectedSet,
       id,
       metrics,
     );
     classifications.set(id, { ...base, level: null });
   }
   const levels = buildLevels(graph, classifications, metrics);
-  const relevantSet = new Set(relevant.relevantNodeIds);
-  const selectedSet = new Set(graph.selectedIds);
+  const activeSet = new Set(relevant.active.nodeIds);
 
   const selected: PlannedSelectedNode[] = graph.selectedIds.map((id) => {
     const node = graph.nodesById.get(id)!;
@@ -206,7 +207,7 @@ export function buildDependencyWaveGraphInternal(
       id: node.id,
       issueNumber: node.issueNumber,
       status: node.status as "complete" | "unresolved",
-      relevant: relevantSet.has(node.id),
+      relevant: activeSet.has(node.id),
     }));
   const edges = graph.edges.map((edge) => ({
     blockerId: edge.blockerId,

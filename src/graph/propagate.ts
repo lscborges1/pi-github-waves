@@ -59,8 +59,9 @@ export function propagateComponentFacts(
     .map(({ index }) => index)
     .sort((a, b) => a - b);
 
-  while (queue.length > 0) {
-    const componentIndex = queue.shift()!;
+  let queueIndex = 0;
+  while (queueIndex < queue.length) {
+    const componentIndex = queue[queueIndex++]!;
     const component = stronglyConnected.components[componentIndex]!;
     if (metrics) metrics.nodeVisits += component.nodeIds.length;
     for (const downstream of [...outgoing[componentIndex]!].sort((a, b) => a - b)) {
@@ -73,7 +74,6 @@ export function propagateComponentFacts(
       indegree[downstream] = indegree[downstream]! - 1;
       if (indegree[downstream] === 0) {
         queue.push(downstream);
-        queue.sort((a, b) => a - b);
       }
     }
   }

@@ -180,6 +180,46 @@ describe("buildDependencyWaveGraph", () => {
     expect(graph.levels).toEqual([]);
   });
 
+  it("detects boundary and selected-to-boundary cycles while preserving unaffected siblings", () => {
+    const boundaryCycle = planned(
+      input(
+        [
+          { id: "x", issueNumber: 1, status: "unresolved" },
+          { id: "y", issueNumber: 2, status: "unresolved" },
+          { id: "blocked", issueNumber: 3, status: "eligible" },
+          { id: "sibling", issueNumber: 4, status: "eligible" },
+        ],
+        ["blocked", "sibling"],
+        [
+          { blockerId: "x", blockedId: "y" },
+          { blockerId: "y", blockedId: "x" },
+          { blockerId: "y", blockedId: "blocked" },
+        ],
+      ),
+    );
+    expect(boundaryCycle.cycles).toEqual([{ issueNumbers: [1, 2] }]);
+    expect(boundaryCycle.selected.map((entry) => entry.disposition)).toEqual([
+      "invalid",
+      "ready",
+    ]);
+
+    const mixedCycle = planned(
+      input(
+        [
+          { id: "boundary", issueNumber: 1, status: "unresolved" },
+          { id: "selected", issueNumber: 2, status: "eligible" },
+        ],
+        ["selected"],
+        [
+          { blockerId: "boundary", blockedId: "selected" },
+          { blockerId: "selected", blockedId: "boundary" },
+        ],
+      ),
+    );
+    expect(mixedCycle.cycles).toEqual([{ issueNumbers: [1, 2] }]);
+    expect(mixedCycle.selected[0]!.disposition).toBe("invalid");
+  });
+
   it("stops cycles and blockers behind completed work", () => {
     const graph = planned(
       input(
@@ -209,7 +249,7 @@ describe("buildDependencyWaveGraph", () => {
     expect(graph.boundary).toEqual([
       { id: "cycle-a", issueNumber: 1, status: "unresolved", relevant: false },
       { id: "cycle-b", issueNumber: 2, status: "unresolved", relevant: false },
-      { id: "done", issueNumber: 3, status: "complete", relevant: true },
+      { id: "done", issueNumber: 3, status: "complete", relevant: false },
     ]);
   });
 

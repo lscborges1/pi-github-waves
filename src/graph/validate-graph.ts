@@ -66,13 +66,20 @@ function grouped<T>(items: T[], keyOf: (item: T) => string): Map<string, T[]> {
   return groups;
 }
 
+function compareIds(
+  a: string,
+  b: string,
+  nodesById: ReadonlyMap<string, DependencyNode>,
+): number {
+  if (a === b) return 0;
+  const nodeA = nodesById.get(a);
+  const nodeB = nodesById.get(b);
+  if (!nodeA || !nodeB) return compareOpaqueId(a, b);
+  return compareNumberThenId(nodeA, nodeB);
+}
+
 function sortIds(ids: Iterable<string>, nodesById: ReadonlyMap<string, DependencyNode>): string[] {
-  return [...ids].sort((a, b) => {
-    const nodeA = nodesById.get(a);
-    const nodeB = nodesById.get(b);
-    if (!nodeA || !nodeB) return compareOpaqueId(a, b);
-    return compareNumberThenId(nodeA, nodeB);
-  });
+  return [...ids].sort((a, b) => compareIds(a, b, nodesById));
 }
 
 export function validateGraph(
@@ -303,19 +310,23 @@ export function validateGraph(
     incomingMutable.get(edge.blockedId)!.push(edge.blockerId);
     outgoingMutable.get(edge.blockerId)!.push(edge.blockedId);
   }
-  for (const ids of incomingMutable.values()) ids.sort((a, b) => sortIds([a, b], nodesById)[0] === a ? -1 : 1);
-  for (const ids of outgoingMutable.values()) ids.sort((a, b) => sortIds([a, b], nodesById)[0] === a ? -1 : 1);
+  for (const ids of incomingMutable.values()) {
+    ids.sort((a, b) => compareIds(a, b, nodesById));
+  }
+  for (const ids of outgoingMutable.values()) {
+    ids.sort((a, b) => compareIds(a, b, nodesById));
+  }
 
   const reached = new Set<string>();
   const queue = sortIds(new Set(input.selectedIds), nodesById);
-  while (queue.length > 0) {
-    const id = queue.shift()!;
+  let queueIndex = 0;
+  while (queueIndex < queue.length) {
+    const id = queue[queueIndex++]!;
     if (reached.has(id)) continue;
     reached.add(id);
     for (const blocker of incomingMutable.get(id) ?? []) {
       if (!reached.has(blocker)) queue.push(blocker);
     }
-    queue.sort((a, b) => sortIds([a, b], nodesById)[0] === a ? -1 : 1);
   }
   const row4: GraphError[] = [];
   for (const entry of input.nodes) {

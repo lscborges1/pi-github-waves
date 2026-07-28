@@ -26,9 +26,10 @@ export function buildRelevantGraph(
   const compareIds = (a: string, b: string): number =>
     compareNumberThenId(graph.nodesById.get(a)!, graph.nodesById.get(b)!);
   queue.sort(compareIds);
+  let queueIndex = 0;
 
-  while (queue.length > 0) {
-    const id = queue.shift()!;
+  while (queueIndex < queue.length) {
+    const id = queue[queueIndex++]!;
     if (expanded.has(id)) continue;
     expanded.add(id);
     relevant.add(id);
@@ -45,7 +46,6 @@ export function buildRelevantGraph(
         queue.push(blockerId);
       }
     }
-    queue.sort(compareIds);
   }
 
   const relevantNodeIds = [...relevant].sort(compareIds);

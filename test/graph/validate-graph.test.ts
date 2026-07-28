@@ -246,6 +246,74 @@ describe("validateGraph", () => {
     ]);
   });
 
+  it("accepts exact selected, boundary, and edge limits", () => {
+    const selectedOnly: DependencyGraphInput = {
+      schemaVersion: 1,
+      maxConcurrency: 8,
+      selectedIds: Array.from({ length: 50 }, (_, index) => `s-${index}`),
+      nodes: Array.from({ length: 50 }, (_, index) =>
+        node(`s-${index}`, index + 1, "eligible"),
+      ),
+      edges: [],
+    };
+    expect(validateGraph(selectedOnly).kind).toBe("valid");
+
+    const boundaryNodes = Array.from({ length: 200 }, (_, index) =>
+      node(`b-${index}`, index + 1, "unresolved"),
+    );
+    const selected = node("selected", 201, "eligible");
+    const edgeKeys = new Set<string>();
+    const edgeList: Array<{ blockerId: string; blockedId: string }> = [];
+    const addEdge = (blockerId: string, blockedId: string) => {
+      const key = `${blockerId}\0${blockedId}`;
+      if (edgeKeys.has(key)) return;
+      edgeKeys.add(key);
+      edgeList.push({ blockerId, blockedId });
+    };
+    for (const boundary of boundaryNodes) addEdge(boundary.id, selected.id);
+    const allNodes = [...boundaryNodes, selected];
+    for (let blocker = 0; blocker < allNodes.length && edgeList.length < 10_000; blocker += 1) {
+      for (
+        let blocked = blocker + 1;
+        blocked < allNodes.length && edgeList.length < 10_000;
+        blocked += 1
+      ) {
+        addEdge(allNodes[blocker]!.id, allNodes[blocked]!.id);
+      }
+    }
+
+    expect(edgeList).toHaveLength(10_000);
+    expect(
+      validateGraph({
+        schemaVersion: 1,
+        maxConcurrency: 8,
+        selectedIds: [selected.id],
+        nodes: allNodes,
+        edges: edgeList,
+      }).kind,
+    ).toBe("valid");
+  });
+
+  it("emits one duplicate-edge error for groups of any size", () => {
+    const input = validInput();
+    input.edges = Array.from({ length: 4 }, () => ({
+      blockerId: "boundary",
+      blockedId: "selected",
+    }));
+
+    expect(errors(input)).toEqual([
+      {
+        code: "duplicate_edge",
+        issueNumber: 2,
+        details: {
+          blockedId: "selected",
+          blockerId: "boundary",
+          occurrences: 4,
+        },
+      },
+    ]);
+  });
+
   it("supports deeply frozen input without mutation", () => {
     const input = validInput();
     Object.freeze(input.nodes[0]);
