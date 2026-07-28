@@ -33,7 +33,49 @@ test/graph/
   build-dependency-wave-graph.test.ts
 ```
 
-`src/graph/index.ts` exports the contracts and `buildDependencyWaveGraph`. Internal helpers are not exported. The module has no runtime dependencies and performs no I/O.
+`src/graph/index.ts` and package exports expose only the contracts and `buildDependencyWaveGraph`. Helper files may use named source-level exports so repository tests can import them by relative source path; they are internal because they are absent from `index.ts` and the package `exports` map. The module has no runtime dependencies and performs no I/O.
+
+### Internal seams
+
+```ts
+interface ValidatedGraph {
+  schemaVersion: 1;
+  maxConcurrency: number;
+  selectedIds: string[];            // unique, raw, sorted by issue number then ID
+  nodesById: ReadonlyMap<string, DependencyNode>;
+  nodesByNumber: ReadonlyMap<number, DependencyNode>;
+  nodes: DependencyNode[];           // issue number then ID
+  edges: DependencyEdge[];           // blocker number, blocked number, IDs
+  incoming: ReadonlyMap<string, readonly string[]>;
+  outgoing: ReadonlyMap<string, readonly string[]>;
+}
+
+type GraphValidationOutcome =
+  | { kind: "valid"; graph: ValidatedGraph }
+  | { kind: "invalid"; errors: GraphError[] };
+
+export function validateGraph(input: DependencyGraphInput): GraphValidationOutcome;
+
+interface ActiveGraph {
+  nodeIds: readonly string[];        // issue number then ID
+  issueNumberById: ReadonlyMap<string, number>;
+  outgoing: ReadonlyMap<string, readonly string[]>;
+}
+
+interface GraphMetrics { nodeVisits: number; edgeVisits: number; }
+
+interface StronglyConnectedResult {
+  components: Array<{ nodeIds: string[]; cyclic: boolean }>;
+  componentByNodeId: ReadonlyMap<string, number>;
+}
+
+export function findStronglyConnectedComponents(
+  graph: ActiveGraph,
+  metrics?: GraphMetrics,
+): StronglyConnectedResult;
+```
+
+These helpers are source-level exports only. `validateGraph` returns all row-ordered errors and never a partial graph. `findStronglyConnectedComponents` requires a validated active graph, does not fail for graph data, and returns components sorted by their lowest issue number; node IDs inside each component follow issue-number/ID order. `ActiveGraph.issueNumberById` supplies ordering context explicitly.
 
 ## Contracts
 
@@ -118,6 +160,7 @@ export type GraphErrorCode =
   | "boundary_limit_exceeded"
   | "edge_limit_exceeded"
   | "invalid_node_id"
+  | "invalid_selected_id"
   | "invalid_issue_number"
   | "duplicate_node_id"
   | "duplicate_issue_number"
@@ -171,7 +214,9 @@ Validation runs in this exact order. Every check listed in the current row runs 
 - `maxConcurrency` must be an integer from 1 through 8.
 - Node IDs must be non-empty after ECMAScript `trim()`.
 - Issue numbers must be finite positive safe integers. `NaN`, infinities, and negative zero are invalid.
-- Selected IDs must be non-empty after `trim()`.
+- Selected IDs must be non-empty after ECMAScript `trim()`; failures use `invalid_selected_id`.
+
+IDs remain raw opaque strings. `trim()` is used only for the emptiness predicate; valid values are never trimmed, case-folded, or Unicode-normalized before identity comparison or output.
 - Limits: at most 50 unique selected IDs, 200 non-selected nodes, and 10,000 input edges.
 
 First scan all nodes and record scalar validity by original node index. Emit one error per invalid node ID field and one per invalid issue-number field. Limits are computed independently and emit once per exceeded limit: selected count is distinct raw selected strings; boundary count is input nodes whose raw `id` is absent from that distinct raw-selected set; edge count is `edges.length`. If Row 1 has any error, duplicate/role resolution does not run.
@@ -213,6 +258,7 @@ Numeric detail values are normalized before constructing `GraphError`: finite no
 | `boundary_limit_exceeded` | once | null | `{ actual, maximum: 200 }` |
 | `edge_limit_exceeded` | once | null | `{ actual, maximum: 10000 }` |
 | `invalid_node_id` | once per invalid field | valid unique issue number if Row-1-valid, else null | `{ nodeIndex, value: id }` |
+| `invalid_selected_id` | once per invalid selected field | null | `{ selectedIndex, value: id }` |
 | `invalid_issue_number` | once per invalid field | null | `{ nodeIndex, value: normalizedNumber }` |
 | `duplicate_node_id` | once per duplicated valid ID group | null | `{ id }` |
 | `duplicate_issue_number` | once per duplicated valid number group | duplicated number | `{ issueNumber }` |
@@ -309,9 +355,9 @@ Do not run a full DFS for each selected issue.
 
 1. Condense relevant active strongly connected components into a DAG.
 2. Mark component-local facts: cycle, status-invalid selected, unresolved boundary.
-3. In one reverse-topological pass, memoize whether each component reaches each fact.
-4. Use memoized facts to classify selected nodes and responsible direct blockers.
-5. For nodes surviving priorities 1–4, calculate levels in topological order.
+3. Iterate condensation components in ordinary topological order for `blocker -> blocked` edges. For each component, union fact flags from its incoming predecessor (blocker) components with its local facts. This propagates upstream blocker facts downstream.
+4. Use memoized incoming facts to classify selected nodes and responsible direct blockers.
+5. For nodes surviving priorities 1–4, calculate levels in the same topological direction.
 
 After deterministic sorting, graph work is `O(V + E)`.
 
@@ -361,7 +407,9 @@ Test selected cycles, boundary cycles, selected-to-boundary cycles, cycle depend
 
 Property tests permute nodes, edges, and selected IDs and require deep-equal output.
 
-`build-dependency-wave-graph.ts` also exports `buildDependencyWaveGraphInternal(input, metrics)` only from its source file, not from `src/graph/index.ts` or package exports. `metrics` is a test-only mutable `{ nodeVisits: number; edgeVisits: number }`; production `buildDependencyWaveGraph` creates no metrics and calls the same internal implementation. Every adjacency-node examination increments `nodeVisits` once and every adjacency-edge examination increments `edgeVisits` once at the examination site. Large synthetic DAG tests assert each counter is at most `4 * (V + E)`, preventing per-selected full traversals.
+`build-dependency-wave-graph.ts` has a named source-level export `buildDependencyWaveGraphInternal(input, metrics?)`, absent from `index.ts` and package exports. `metrics` is a test-only mutable `{ nodeVisits: number; edgeVisits: number }`; the public wrapper omits it.
+
+Metrics cover planning after successful validation and sorting, not validation or sort comparisons. `V = nodes.length` and `E = edges.length` in the validated input. Increment `nodeVisits` once for each node loop-body execution in relevant-graph discovery, Tarjan, condensation construction, topological propagation, classification, and level construction. Increment `edgeVisits` once for each edge loop-body execution in those same passes. Nested work that does not consume another node/edge does not increment. Synthetic DAG tests assert both counters separately are at most `12 * (V + E)`. This generous fixed bound detects per-selected traversals without constraining constant-pass implementation details.
 
 ### Immutability
 
