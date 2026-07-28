@@ -457,4 +457,8 @@ The public package surface is `pi-github-waves/graph`. Validation, relevant-grap
 
 Issues and pull requests are welcome, especially when they preserve the project’s deterministic, fail-closed boundaries and keep implemented functionality clearly separated from roadmap functionality.
 
-No open-source license has been added yet. Repository access remains subject to applicable law and platform terms; a license should be selected before broader distribution.
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). Contributions are
+accepted under the same license; see the license header for the applicable
+patent grant and trademark disclaimer.
