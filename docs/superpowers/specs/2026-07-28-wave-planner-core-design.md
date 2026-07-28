@@ -132,7 +132,9 @@ Future adapters determine availability, eligibility, completion, and source diag
 
 ## Structural validation
 
-Validation runs before graph calculation and collects all errors that can be found safely. It returns stable diagnostics rather than throwing for user/data errors.
+`planWaves` has the runtime signature `planWaves(input: unknown): PlannerOutcome`. `PlannerInputV1` remains the exported authoring type, but no caller cast is trusted. Validation never reads a nested field until its containing object/array has passed a type guard. Missing objects, nulls, non-array collections, invalid enum values, malformed diagnostics, and malformed nested evidence return diagnostics rather than throwing.
+
+Unknown object keys are ignored and excluded from output/fingerprints. Required keys must exist with the exact types below. Validation runs before graph calculation and collects all errors safe to compute.
 
 ### Stable core diagnostic codes
 
@@ -143,6 +145,7 @@ export type CoreErrorCode =
   | "boundary_limit_exceeded"
   | "dependency_limit_exceeded"
   | "concurrency_out_of_range"
+  | "invalid_type"
   | "invalid_identifier"
   | "invalid_issue_number"
   | "duplicate_node_id"
@@ -171,19 +174,25 @@ export type CoreWarningCode =
 
 ### Invariants and validation phases
 
-Validation runs in three deterministic phases.
+Validation runs in four deterministic phases.
 
-**Phase 1 — identity and limits:** schema, concurrency, array limits, non-empty identifiers, positive issue numbers, and duplicate node IDs/numbers. Repository node ID, owner, name, default branch, tip OID, every node ID, title, and URL must be non-empty strings after no trimming or normalization; whitespace-only strings are invalid. Issue numbers and completion PR numbers must be positive safe integers. If Phase 1 has errors, validation returns all Phase 1 errors and warnings and does not inspect selected references or edges, because duplicate identity makes attribution unsafe.
+**Phase 0 — runtime shape:** the root, repository, config, every node, every completion object, every source diagnostic, and every edge must be non-null plain objects (`Object.getPrototypeOf(value)` is `Object.prototype` or `null`). `inputOrder`, `selectedNodeIds`, `nodes`, `edges`, both completion arrays, and both diagnostic arrays must be arrays. Enum fields must equal a declared literal. Numbers must have the declared integer/null shape. A malformed value emits `invalid_type` at the deepest safely attributable JSON path. If a containing value is malformed, descendants are not inspected. If Phase 0 has errors, later phases do not run.
 
-**Phase 2 — node and selection consistency:** selected IDs are unique, exist, and number at most 50. `inputOrder` contains exactly their issue numbers once each. An available node requires non-null `state`, `updatedAt`, and `bodySha256`. An unavailable node requires those fields to be null, `eligibility: "invalid"`, `completion.status: "unknown"`, and empty completion evidence.
+All string fields are runtime-checked. These must be non-empty and not whitespace-only: repository `nodeId`, `owner`, `name`, `defaultBranch`, `defaultBranchTipOid`; node `nodeId`, `title`, `url`; non-null `updatedAt` and `bodySha256`; edge endpoint IDs; completion OIDs; diagnostic `code` and `message`; every selected node ID. Diagnostic severity must be `error` or `warning`; diagnostic issue number must be null or a positive safe integer. These checks use `invalid_identifier`, `invalid_issue_number`, or `invalid_type` as appropriate.
 
-Completion evidence is normalized by deduplicating and sorting PR numbers numerically and OIDs by Unicode code-point order. Duplicate evidence emits one `duplicate_completion_evidence` warning per node and kind. Every OID must be a non-empty, non-whitespace string. `complete` requires `state: "CLOSED"`, at least one PR number, at least one OID, and `eligibility: "not_required"`. `unknown` requires empty evidence. A selected available incomplete node requires `eligibility: "eligible"` or `"invalid"`. A boundary available incomplete node may use `eligible`, `invalid`, or `not_required`. A selected complete node requires `not_required`.
+**Phase 1 — identity:** schema, concurrency, non-empty identifiers, positive issue numbers, and duplicate node IDs/numbers. If Phase 1 has errors, validation returns all Phase 0/1 errors and warnings and does not resolve selections or edges, because duplicate identity makes attribution unsafe.
 
-A diagnostic in `node.sourceDiagnostics` must have `issueNumber === node.number`; otherwise emit `source_diagnostic_misattached`. A diagnostic in top-level `input.sourceDiagnostics` must have `issueNumber === null`; otherwise emit the same code. Attached errors affect only their owning node; top-level errors are global. If Phase 2 has structural errors, validation returns all Phase 1 warnings plus all Phase 2 errors/warnings and does not inspect edges.
+**Phase 2 — node and selection consistency:** selected IDs are resolved. Duplicate selected IDs are errors. The selected limit is the number of distinct valid selected ID strings, whether or not each resolves. Boundary count is the number of nodes whose IDs are absent from that distinct selected-ID set. Limits are checked here. Missing selected IDs then emit `selected_node_missing`. `inputOrder` contains exactly the issue numbers of resolved selected nodes once each; when any selected ID is missing, `input_order_mismatch` is not additionally emitted because no issue number exists for comparison.
 
-**Phase 3 — edges:** every endpoint exists; self-edges are invalid; at most 100 unique incoming blockers are allowed. Exact duplicates emit one warning and collapse. Same endpoints with different sources emit `duplicate_edge_conflict` and neither edge is chosen. If Phase 3 has errors, validation returns all warnings and Phase 3 errors with no graph.
+An available node requires non-null `state`, `updatedAt`, and `bodySha256`. An unavailable node requires those fields to be null, `eligibility: "invalid"`, `completion.status: "unknown"`, and empty completion evidence.
 
-All diagnostics safe within a phase are aggregated. Later phases never run after an earlier phase error. Warnings discovered before failure remain in the `invalid_input` outcome. Any structural error returns `invalid_input` with no plan or fingerprint. Graph cycles are not structural and are handled below.
+Completion evidence is normalized by deduplicating and sorting PR numbers numerically and OIDs by Unicode code-point order. For three or more repetitions, exactly one `duplicate_completion_evidence` warning is emitted per node and field (`closingPullRequestNumbers` or `verifiedMergeCommitOids`), regardless of duplicate count. `complete` requires `state: "CLOSED"`, at least one PR number, at least one OID, and `eligibility: "not_required"`. `unknown` requires empty evidence. A selected available incomplete node requires `eligibility: "eligible"` or `"invalid"`. A selected available unknown node requires `eligibility: "invalid"` and will classify invalid. A boundary available incomplete/unknown node may use `eligible`, `invalid`, or `not_required`. A selected complete node requires `not_required`.
+
+A diagnostic in `node.sourceDiagnostics` must have `issueNumber === node.number`; otherwise emit `source_diagnostic_misattached`. A diagnostic in top-level `input.sourceDiagnostics` must have `issueNumber === null`. Source diagnostics are never deduplicated: each input occurrence is preserved once, then canonically sorted. Attached errors affect only their owning node; top-level errors are global. If Phase 2 has errors, edge validation does not run.
+
+**Phase 3 — edges:** every endpoint exists; self-edges are invalid. Dependency count is the number of distinct blocker node IDs for a blocked node after grouping exact duplicates and before discarding source-conflicting groups. At most 100 are allowed. Any group of two or more identical edges emits exactly one `duplicate_edge` warning regardless of multiplicity and collapses to one edge. Same endpoints with different sources emit one `duplicate_edge_conflict`; no edge from that endpoint group is chosen. If Phase 3 has errors, no graph is returned.
+
+All diagnostics safe within a phase are aggregated. Later phases never run after an earlier phase error. Warnings discovered before failure remain in `invalid_input`. Any structural error returns `invalid_input` with no plan or fingerprint. Graph cycles are not structural.
 
 ## Output contract
 
@@ -275,7 +284,7 @@ Tarjan's strongly connected components algorithm runs over the remaining active 
 
 A graph containing a cycle remains structurally useful and returns `kind: "planned"`. Selected nodes in a cycle or transitively dependent on one through active blocker edges are invalid. Unaffected components classify normally. Cyclic/cycle-dependent selected nodes have no level. The plan is non-runnable and receives a valid fingerprint.
 
-Every transitive blocker search walks incoming active edges in ascending blocker-number order and stops at effectively complete nodes. This traversal rule applies identically to cycle dependency, invalid-selected propagation, and unresolved-boundary propagation.
+Every transitive blocker search begins by evaluating each direct blocker itself, then walks that blocker's incoming active edges in ascending blocker-number order. It stops at effectively complete nodes. Thus a direct invalid selected blocker, unresolved boundary blocker, or cycle member is reachable without requiring another edge. This rule applies identically to cycle dependency, invalid-selected propagation, and unresolved-boundary propagation.
 
 ## Classification rules and precedence
 
@@ -290,7 +299,7 @@ Classification is performed in ascending selected issue-number order with this f
 | 5 | No incomplete selected blocker | `ready` | `1` |
 | 6 | Otherwise | `blocked_selected` | `1 + max(blocker levels)` |
 
-An invalid selected node is one whose availability is missing/unreadable, eligibility is invalid, attached source diagnostics contain an error, or active dependency closure reaches a cycle. A boundary node is unresolved when it is not effectively complete; an attached source error is therefore unresolved.
+An invalid selected node is one whose availability is missing/unreadable, eligibility is invalid, completion status is unknown, attached source diagnostics contain an error, or active dependency closure reaches a cycle. A boundary node is unresolved when it is not effectively complete; unknown completion or an attached source error is therefore unresolved.
 
 `blocked_invalid_selected` takes precedence when both invalid selected and external blockers exist. `blocked_external` takes precedence over ordinary selected blocking. For level calculation, all remaining blockers are valid selected nodes with defined levels.
 
@@ -343,6 +352,7 @@ Core messages and issue-number attribution are fixed:
 | `boundary_limit_exceeded` | null | `Boundary issue limit exceeded: {count} > 200.` |
 | `dependency_limit_exceeded` | blocked issue | `Dependency limit exceeded for issue #{n}: {count} > 100.` |
 | `concurrency_out_of_range` | null | `maxConcurrency must be an integer from 1 through 8: {value}.` |
+| `invalid_type` | node issue when safely known, otherwise null | `Invalid runtime type at {field}: expected {expected}, received {actual}.` |
 | `invalid_identifier` | node issue when known, otherwise null | `Invalid non-empty identifier for {field}: {jsonValue}.` |
 | `invalid_issue_number` | null | `Issue number must be a positive safe integer: {jsonValue}.` |
 | `duplicate_node_id` | null | `Duplicate node ID: {jsonString}.` |
@@ -358,11 +368,11 @@ Core messages and issue-number attribution are fixed:
 | `completion_evidence_invalid` | node issue | `Completion evidence is invalid for issue #{n}: {field}.` |
 | `eligibility_inconsistent` | node issue | `Eligibility is inconsistent for issue #{n}.` |
 | `source_diagnostic_misattached` | owning node issue when attached, otherwise null | `Source diagnostic issueNumber is inconsistent with its container.` |
-| `dependency_cycle` | lowest cycle issue | `Dependency cycle: {ascendingNumbersJoinedByArrow}.` |
+| `dependency_cycle` | lowest cycle issue | `Dependency cycle: {hashPrefixedAscendingNumbersJoinedByCommaSpace}.` |
 | `duplicate_edge` | blocked issue | `Duplicate edge collapsed: #{blocker} -> #{blocked} ({source}).` |
 | `duplicate_completion_evidence` | node issue | `Duplicate completion evidence collapsed for issue #{n}: {field}.` |
 
-`{jsonValue}` and `{jsonString}` use `JSON.stringify`; values that cannot be JSON-stringified render their JavaScript type name. Counts use base-10 integers. These templates live in `diagnostics.ts` and golden tests assert exact output.
+`{field}` is a canonical JSONPath using `$`, dot-separated object keys, and numeric brackets, for example `$.nodes[2].completion.status`; array positions refer to original input positions. `{expected}` is one of the fixed labels `plain object`, `array`, `string`, `positive safe integer`, `integer 1..8`, `null`, or the literal union joined by ` | `. `{actual}` is exactly `null`, `array`, or JavaScript `typeof value`. `{jsonValue}` and `{jsonString}` use `JSON.stringify`; if it returns undefined, use `typeof value`. Counts use base-10 integers. The cycle placeholder is formatted as `#3, #4, #8`. Completion `{field}` is exactly `closingPullRequestNumbers` or `verifiedMergeCommitOids`. Other diagnostic field placeholders use the canonical JSONPath. These templates live in `diagnostics.ts`; golden tests assert exact output.
 
 Canonical diagnostic ordering:
 
@@ -400,7 +410,7 @@ The fingerprint is lowercase hexadecimal SHA-256 of canonical JSON for the plan 
 
 - `fingerprint` set to the empty string;
 - `inputOrder` excluded;
-- diagnostic `message` fields excluded.
+- every property named `message` removed recursively from diagnostics in `plan.diagnostics`, `selected[*].diagnostics`, and `boundary[*].diagnostics`; no other `message` property exists in `WavePlanV1`.
 
 The returned plan contains that fingerprint. Calling `planWaves` repeatedly with semantically equivalent, differently ordered input must return byte-identical canonical plans except for preserved `inputOrder`; fingerprints must be identical.
 
@@ -450,11 +460,11 @@ The complete output also includes identities, edges, diagnostics, repository dat
 
 ### Contract validation
 
-Cover every invariant and stable diagnostic code, including multiple simultaneous violations, boundary values (0/1/50/51 selected, 200/201 boundary, 100/101 blockers, concurrency 1/8/9), duplicate edge warning versus source conflict, missing endpoints, and inconsistent completion/eligibility states.
+Cover every invariant and stable diagnostic code, including null/missing roots, malformed nested objects and arrays, every invalid enum/type/string field, multiple simultaneous violations, boundary values (0/1/50/51 selected, 200/201 boundary, 100/101 blockers, concurrency 1/8/9), duplicate groups of 2/3/4 entries, edge warning versus source conflict, missing endpoints, unknown selected completion, malformed diagnostics, and inconsistent completion/eligibility states.
 
 ### Graph behavior
 
-Cover chains, diamonds, disconnected components, completed blockers, selected completion, unresolved boundaries, invalid selected blockers, transitive invalid/external blockers, self-edge rejection, selected cycles, boundary-only cycles, cycle dependents, and unaffected siblings.
+Cover chains, diamonds, disconnected components, completed blockers, selected completion, completed nodes with source errors, unresolved/unknown boundaries, direct and transitive invalid selected blockers, mixed invalid/external precedence, direct and transitive external blockers, traversal stopping at completion, self-edge rejection, selected cycles, boundary-only cycles, direct cycle blockers, cycle dependents, and unaffected siblings.
 
 ### Determinism
 
