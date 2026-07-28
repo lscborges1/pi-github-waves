@@ -294,25 +294,28 @@ describe("validateGraph", () => {
     ).toBe("valid");
   });
 
-  it("emits one duplicate-edge error for groups of any size", () => {
-    const input = validInput();
-    input.edges = Array.from({ length: 4 }, () => ({
-      blockerId: "boundary",
-      blockedId: "selected",
-    }));
+  it.each([3, 4])(
+    "emits one duplicate-edge error for a group of %i",
+    (occurrences) => {
+      const input = validInput();
+      input.edges = Array.from({ length: occurrences }, () => ({
+        blockerId: "boundary",
+        blockedId: "selected",
+      }));
 
-    expect(errors(input)).toEqual([
-      {
-        code: "duplicate_edge",
-        issueNumber: 2,
-        details: {
-          blockedId: "selected",
-          blockerId: "boundary",
-          occurrences: 4,
+      expect(errors(input)).toEqual([
+        {
+          code: "duplicate_edge",
+          issueNumber: 2,
+          details: {
+            blockedId: "selected",
+            blockerId: "boundary",
+            occurrences,
+          },
         },
-      },
-    ]);
-  });
+      ]);
+    },
+  );
 
   it("supports deeply frozen input without mutation", () => {
     const input = validInput();

@@ -23,6 +23,65 @@ function planned(graphInput: DependencyGraphInput) {
 }
 
 describe("buildDependencyWaveGraph", () => {
+  it("plans a single ready issue", () => {
+    const graph = planned(
+      input([{ id: "only", issueNumber: 1, status: "eligible" }], ["only"], []),
+    );
+    expect(graph.selected[0]).toEqual({
+      id: "only",
+      issueNumber: 1,
+      disposition: "ready",
+      level: 1,
+      directBlockerNumbers: [],
+      unresolvedBlockerNumbers: [],
+    });
+    expect(graph.levels).toEqual([{ level: 1, batches: [[1]] }]);
+  });
+
+  it("plans a selected dependency chain", () => {
+    const graph = planned(
+      input(
+        [
+          { id: "first", issueNumber: 1, status: "eligible" },
+          { id: "second", issueNumber: 2, status: "eligible" },
+          { id: "third", issueNumber: 3, status: "eligible" },
+        ],
+        ["first", "second", "third"],
+        [
+          { blockerId: "first", blockedId: "second" },
+          { blockerId: "second", blockedId: "third" },
+        ],
+      ),
+    );
+    expect(graph.selected.map(({ disposition, level }) => ({ disposition, level }))).toEqual([
+      { disposition: "ready", level: 1 },
+      { disposition: "blocked_selected", level: 2 },
+      { disposition: "blocked_selected", level: 3 },
+    ]);
+  });
+
+  it("reports the responsible direct blocker for transitive invalid work", () => {
+    const graph = planned(
+      input(
+        [
+          { id: "bad", issueNumber: 1, status: "invalid" },
+          { id: "middle", issueNumber: 2, status: "eligible" },
+          { id: "selected", issueNumber: 3, status: "eligible" },
+        ],
+        ["bad", "middle", "selected"],
+        [
+          { blockerId: "bad", blockedId: "middle" },
+          { blockerId: "middle", blockedId: "selected" },
+        ],
+      ),
+    );
+    expect(graph.selected[2]).toMatchObject({
+      disposition: "blocked_invalid_selected",
+      directBlockerNumbers: [2],
+      unresolvedBlockerNumbers: [2],
+    });
+  });
+
   it("calculates deterministic levels for a dependency diamond", () => {
     const graph = planned(
       input(

@@ -3,14 +3,6 @@ import type {
   GraphMetrics,
   StronglyConnectedResult,
 } from "./contracts.js";
-import { compareOpaqueId } from "./compare.js";
-
-function compareNodeIds(graph: ActiveGraph, a: string, b: string): number {
-  return (
-    graph.issueNumberById.get(a)! - graph.issueNumberById.get(b)! ||
-    compareOpaqueId(a, b)
-  );
-}
 
 export function findStronglyConnectedComponents(
   graph: ActiveGraph,
@@ -21,7 +13,7 @@ export function findStronglyConnectedComponents(
   const lowLinks = new Map<string, number>();
   const stack: string[] = [];
   const onStack = new Set<string>();
-  const discovered: string[][] = [];
+  const rawComponents: string[][] = [];
 
   const connect = (id: string): void => {
     if (metrics) metrics.nodeVisits += 1;
@@ -49,28 +41,35 @@ export function findStronglyConnectedComponents(
       component.push(member);
       if (member === id) break;
     }
-    component.sort((a, b) => compareNodeIds(graph, a, b));
-    discovered.push(component);
+    rawComponents.push(component);
   };
 
   for (const id of graph.nodeIds) {
     if (!indexes.has(id)) connect(id);
   }
 
-  discovered.sort((a, b) => {
-    const first = compareNodeIds(graph, a[0]!, b[0]!);
-    if (first !== 0) return first;
-    for (let index = 1; index < Math.min(a.length, b.length); index += 1) {
-      const order = compareNodeIds(graph, a[index]!, b[index]!);
-      if (order !== 0) return order;
-    }
-    return a.length - b.length;
+  const rawComponentByNodeId = new Map<string, number>();
+  rawComponents.forEach((component, rawIndex) => {
+    for (const id of component) rawComponentByNodeId.set(id, rawIndex);
   });
 
-  const components = discovered.map((nodeIds) => ({
-    nodeIds,
-    cyclic: nodeIds.length > 1,
-  }));
+  const orderedRawIndexes: number[] = [];
+  const orderedMembers = new Map<number, string[]>();
+  for (const id of graph.nodeIds) {
+    const rawIndex = rawComponentByNodeId.get(id)!;
+    let members = orderedMembers.get(rawIndex);
+    if (!members) {
+      members = [];
+      orderedMembers.set(rawIndex, members);
+      orderedRawIndexes.push(rawIndex);
+    }
+    members.push(id);
+  }
+
+  const components = orderedRawIndexes.map((rawIndex) => {
+    const nodeIds = orderedMembers.get(rawIndex)!;
+    return { nodeIds, cyclic: nodeIds.length > 1 };
+  });
   const componentByNodeId = new Map<string, number>();
   components.forEach((component, componentIndex) => {
     for (const id of component.nodeIds) {

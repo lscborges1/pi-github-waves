@@ -140,16 +140,18 @@ function buildLevels(
     byLevel.set(classification.level, numbers);
   }
 
-  return [...byLevel.entries()]
-    .sort(([a], [b]) => a - b)
-    .map(([level, issueNumbers]) => {
-      issueNumbers.sort((a, b) => a - b);
-      const batches: number[][] = [];
-      for (let index = 0; index < issueNumbers.length; index += graph.maxConcurrency) {
-        batches.push(issueNumbers.slice(index, index + graph.maxConcurrency));
-      }
-      return { level, batches };
-    });
+  const maxLevel = Math.max(0, ...byLevel.keys());
+  const levels: Array<{ level: number; batches: number[][] }> = [];
+  for (let level = 1; level <= maxLevel; level += 1) {
+    const issueNumbers = byLevel.get(level);
+    if (!issueNumbers) continue;
+    const batches: number[][] = [];
+    for (let index = 0; index < issueNumbers.length; index += graph.maxConcurrency) {
+      batches.push(issueNumbers.slice(index, index + graph.maxConcurrency));
+    }
+    levels.push({ level, batches });
+  }
+  return levels;
 }
 
 export function buildDependencyWaveGraphInternal(
@@ -197,7 +199,7 @@ export function buildDependencyWaveGraphInternal(
       directBlockerNumbers: (graph.incoming.get(id) ?? []).map(
         (blockerId) => graph.nodesById.get(blockerId)!.issueNumber,
       ),
-      unresolvedBlockerNumbers: [...classification.unresolved].sort((a, b) => a - b),
+      unresolvedBlockerNumbers: [...classification.unresolved],
     };
   });
 
@@ -218,9 +220,9 @@ export function buildDependencyWaveGraphInternal(
   const cycles = stronglyConnected.components
     .filter((component) => component.cyclic)
     .map((component) => ({
-      issueNumbers: component.nodeIds
-        .map((id) => graph.nodesById.get(id)!.issueNumber)
-        .sort((a, b) => a - b),
+      issueNumbers: component.nodeIds.map(
+        (id) => graph.nodesById.get(id)!.issueNumber,
+      ),
     }));
 
   const runnable =

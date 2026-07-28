@@ -56,15 +56,14 @@ export function propagateComponentFacts(
   const queue = indegree
     .map((value, index) => ({ value, index }))
     .filter(({ value }) => value === 0)
-    .map(({ index }) => index)
-    .sort((a, b) => a - b);
+    .map(({ index }) => index);
 
   let queueIndex = 0;
   while (queueIndex < queue.length) {
     const componentIndex = queue[queueIndex++]!;
     const component = stronglyConnected.components[componentIndex]!;
     if (metrics) metrics.nodeVisits += component.nodeIds.length;
-    for (const downstream of [...outgoing[componentIndex]!].sort((a, b) => a - b)) {
+    for (const downstream of outgoing[componentIndex]!) {
       if (metrics) metrics.edgeVisits += 1;
       const source = factsByComponent[componentIndex]!;
       const target = factsByComponent[downstream]!;

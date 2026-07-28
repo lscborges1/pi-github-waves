@@ -4,7 +4,6 @@ import type {
   GraphMetrics,
   ValidatedGraph,
 } from "./contracts.js";
-import { compareNumberThenId } from "./compare.js";
 
 export interface RelevantGraph {
   relevantNodeIds: string[];
@@ -23,9 +22,6 @@ export function buildRelevantGraph(
     (id) => graph.nodesById.get(id)?.status !== "complete",
   );
 
-  const compareIds = (a: string, b: string): number =>
-    compareNumberThenId(graph.nodesById.get(a)!, graph.nodesById.get(b)!);
-  queue.sort(compareIds);
   let queueIndex = 0;
 
   while (queueIndex < queue.length) {
@@ -48,7 +44,9 @@ export function buildRelevantGraph(
     }
   }
 
-  const relevantNodeIds = [...relevant].sort(compareIds);
+  const relevantNodeIds = graph.nodes
+    .filter((node) => relevant.has(node.id))
+    .map((node) => node.id);
   const relevantEdges = graph.edges
     .filter((edge) => relevantEdgeKeys.has(`${edge.blockerId}\0${edge.blockedId}`))
     .map((edge) => ({ ...edge }));
@@ -66,7 +64,7 @@ export function buildRelevantGraph(
   }
   const outgoing = new Map<string, readonly string[]>();
   for (const id of activeNodeIds) {
-    outgoing.set(id, outgoingMutable.get(id)!.sort(compareIds));
+    outgoing.set(id, outgoingMutable.get(id)!);
   }
 
   return {
