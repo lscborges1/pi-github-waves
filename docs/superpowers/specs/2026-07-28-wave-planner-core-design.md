@@ -178,7 +178,7 @@ export type CoreWarningCode =
 
 Validation runs in four deterministic phases.
 
-**Phase 0 — runtime shape only:** the root, repository, config, every node, every completion object, every source diagnostic, and every edge must be non-null plain objects (`Object.getPrototypeOf(value)` is `Object.prototype` or `null`). Declared collections must be arrays. Required scalar fields must have their primitive type; nullable fields may additionally be null. Enum fields must equal a declared literal. Phase 0 does not check emptiness, numeric integer/range semantics, uniqueness, cross-field consistency, or completion evidence semantics. A malformed value emits `invalid_type` at the deepest safely attributable JSON path. If a container is malformed, descendants are not inspected. If Phase 0 has errors, later phases do not run.
+**Phase 0 — runtime shape only:** the root, repository, config, every node, every completion object, every source diagnostic, and every edge must be non-null plain data objects (`Object.getPrototypeOf(value)` is `Object.prototype` or `null`, and every required own property is a data descriptor without getter/setter). Declared collections must be arrays. Required scalar fields must have their primitive type; nullable fields may additionally be null. Enum fields must equal a declared literal. `plannerSchemaVersion` is an explicit exception: Phase 0 requires only primitive `number`; Phase 1 emits `schema_version_unsupported` when its value is not `1`. Likewise Phase 0 requires `maxConcurrency` to be a number; Phase 1 checks integer/range. Phase 0 does not check emptiness, other numeric semantics, uniqueness, cross-field consistency, or completion evidence semantics. A malformed value emits `invalid_type` at the deepest safely attributable JSON path. If a container is malformed, descendants are not inspected. All reflection and property reads use `safeInspect`, which wraps `Object.getPrototypeOf`, `Reflect.ownKeys`, `Object.getOwnPropertyDescriptor`, and data-property value reads in `try/catch`. A throwing/revoked Proxy or throwing reflective operation yields one root `invalid_type` with expected `plain data object` and actual `throwing object`; accessor properties yield `invalid_type` at that property with expected `data property` and actual `accessor`. No user-controlled reflective exception escapes `planWaves`. If Phase 0 has errors, later phases do not run.
 
 **Phase 1 — scalar values and identity:** first check schema value, concurrency integer/range, non-empty strings, and positive safe integers. “Whitespace-only” means `value.trim().length === 0` using the ECMAScript 2025 `String.prototype.trim` WhiteSpace and LineTerminator set. Strings are never Unicode-normalized or case-folded by the core. Then perform duplicate grouping only over scalar-valid values. Invalid/empty node IDs never participate in `duplicate_node_id`; invalid issue numbers never participate in `duplicate_issue_number`. Thus two empty node IDs emit two path-specific `invalid_identifier` diagnostics and no duplicate diagnostic; two issue numbers `0` emit two `invalid_issue_number` diagnostics and no duplicate diagnostic. Valid duplicate groups emit one group diagnostic as defined below. The non-empty string rule covers repository identity fields; node IDs/titles/URLs; non-null timestamps/body hashes; edge endpoints; completion OIDs; diagnostic codes/messages; and selected IDs. Diagnostic issue numbers and completion PR numbers must be positive safe integers when non-null/present. Empty/whitespace strings use `invalid_identifier`; numeric values with the right primitive type but invalid integer/range semantics use `invalid_issue_number`, `completion_evidence_invalid`, or `concurrency_out_of_range`. If Phase 1 has errors, later phases do not run because identity may be unsafe.
 
@@ -420,7 +420,30 @@ Core messages and issue-number attribution are fixed:
 
 `{field}` is a canonical JSONPath using `$`, dot-separated object keys, and numeric brackets, for example `$.nodes[2].completion.status`; array positions refer to original input positions. Diagnostic attribution is phase-specific: every Phase 0 diagnostic has `issueNumber: null`; `invalid_issue_number` always has `issueNumber: null` because the rejected value cannot be identity, including a malformed nested `SourceDiagnostic.issueNumber`; for other Phase 1 node-field diagnostics, use the owning node's issue number only when it is a positive safe integer appearing exactly once among scalar-valid node numbers, otherwise null; after Phase 1 succeeds, node diagnostics use their node number and edge diagnostics use the blocked-node number when the blocked endpoint resolves, otherwise null. Nested source-diagnostic shape errors use their containing node under the same rule; top-level source diagnostics always use null.
 
-`{expected}` uses these exact rules: primitive labels are `plain object`, `array`, `string`, `number`, or `positive safe integer`; literal unions list literals in their TypeScript declaration order without quotes, joined by ` | `; nullable fields append ` | null`. Examples are `string | null`, `OPEN | CLOSED | null`, and `positive safe integer | null`. Bounded concurrency uses `integer 1..8`. `{actual}` is exactly `null`, `array`, or JavaScript `typeof value`. `{value}` uses `formatScalar`: `NaN`, `Infinity`, `-Infinity`, and `-0` use those exact strings; every other number uses base-10 `String(value)`; other scalar values use `JSON.stringify`, falling back to `typeof value` when it returns undefined. `{jsonValue}` and `{jsonString}` use `JSON.stringify` with the same fallback. Counts use base-10 integers. The cycle placeholder is formatted as `#3, #4, #8`. Completion `{field}` is exactly `closingPullRequestNumbers` or `verifiedMergeCommitOids`. Other diagnostic field placeholders use the canonical JSONPath. These templates live in `diagnostics.ts`; golden tests assert exact output.
+`{expected}` is field-specific:
+
+| Fields | Phase 0 expected | Later semantic expected/code |
+|---|---|---|
+| Root/repository/config/node/completion/diagnostic/edge/plan composite | `plain data object` | n/a |
+| All declared arrays | `array` | canonicalizer may later require `unique values` or `canonical order` |
+| `plannerSchemaVersion` | `number` | value 1 / `schema_version_unsupported` |
+| `maxConcurrency` | `number` | `integer 1..8` / `concurrency_out_of_range` |
+| Node and input issue numbers, completion PR numbers | `number` | `positive safe integer` / field-specific semantic code |
+| Non-nullable identifiers/text/OIDs | `string` | `non-empty string` / `invalid_identifier` or evidence code |
+| Nullable timestamps/body hash | `string | null` | non-empty when string |
+| Nullable node state | `OPEN | CLOSED | null` | cross-field table |
+| Availability | `available | missing | unreadable` | n/a |
+| Eligibility | `eligible | invalid | not_required` | cross-field table |
+| Completion status | `complete | incomplete | unknown` | cross-field table |
+| Dependency source | `native | body` | n/a |
+| Diagnostic origin | input: `source`; output: `core | source` | n/a |
+| Diagnostic severity | `error | warning` | n/a |
+| Nullable diagnostic issue number | `number | null` | `positive safe integer | null` |
+| `runnable` | `boolean` | n/a |
+| Nullable selected level | `number | null` | disposition constraints |
+| Fingerprint | `string` | `64-character lowercase hexadecimal string` |
+
+`{actual}` is exactly `null`, `array`, `accessor`, `throwing object`, or JavaScript `typeof value`. `{value}` uses `formatScalar`: `NaN`, `Infinity`, `-Infinity`, and `-0` use those exact strings; every other number uses base-10 `String(value)`; other scalar values use `JSON.stringify`, falling back to `typeof value` when it returns undefined. `{jsonValue}` and `{jsonString}` use `JSON.stringify` with the same fallback. Counts use base-10 integers. The cycle placeholder is formatted as `#3, #4, #8`. Completion `{field}` is exactly `closingPullRequestNumbers` or `verifiedMergeCommitOids`. Other diagnostic field placeholders use the canonical JSONPath. These templates live in `diagnostics.ts`; golden tests assert exact output.
 
 Canonical diagnostic ordering:
 
@@ -438,8 +461,20 @@ Messages are developer-facing English constants generated from deterministic tem
 
 `canonicalizePlan(plan)` returns UTF-8 JSON. Runtime `WavePlanV1` objects are closed schemas: unknown properties at any depth are rejected, not retained. Before serialization it performs two deterministic checks:
 
-1. A depth-first walk visits object keys in Unicode code-point order and array indexes ascending. It tracks an ancestor `WeakSet`; the first repeated ancestor reference throws `TypeError("Cannot canonicalize plan at {path}: cyclic reference.")`. At the first prohibited value it throws `TypeError("Cannot canonicalize plan at {path}: prohibited {reason}.")`, where reason is exactly `undefined`, `non-finite number`, `negative zero`, `bigint`, `symbol`, `function`, `non-plain object`, `Map`, `Set`, or `Date`.
-2. The validated acyclic JSON value is checked against the complete **structural** `WavePlanV1` runtime schema in declared interface-field order, recursively through selected, boundary, edges, levels/batches, diagnostics, and completion evidence. Structural validation includes closed fields, primitive/enum/null domains, positive safe integers, schema version 1, concurrency range, unique selected/boundary node IDs and issue numbers, selected/boundary disjointness, edge endpoint presence, a 64-character lowercase hexadecimal fingerprint, and every array ordering/uniqueness rule declared in this spec.
+1. A depth-first walk visits object keys in Unicode code-point order and array indexes ascending. It tracks an ancestor `WeakSet`; the first repeated ancestor reference throws `TypeError("Cannot canonicalize plan at {path}: cyclic reference.")`. At the first prohibited value it throws `TypeError("Cannot canonicalize plan at {path}: prohibited {reason}.")`, where reason is exactly `undefined`, `non-finite number`, `negative zero`, `bigint`, `symbol`, `function`, `non-plain object`, `accessor property`, `throwing object`, `Map`, `Set`, or `Date`. Reflection uses the same guarded descriptor inspection as `safeInspect`; it never invokes accessors.
+2. The validated acyclic JSON value is checked against the complete **structural** `WavePlanV1` runtime schema in declared interface-field order, recursively through selected, boundary, edges, levels/batches, diagnostics, and completion evidence. Structural validation includes closed data-property fields, primitive/enum/null domains, positive safe integers, schema version 1, concurrency range, unique selected/boundary node IDs and issue numbers, selected/boundary disjointness, edge endpoint presence, a 64-character lowercase hexadecimal fingerprint, and every array ordering/uniqueness rule declared in this spec.
+
+After recursive field checks, canonicalizer cross-field checks run in this exact order; the first failure throws:
+
+1. selected and boundary IDs/numbers are internally unique and mutually disjoint;
+2. `inputOrder` is a unique permutation of all selected issue numbers (order itself is preserved);
+3. each edge endpoint ID exists, its number equals that endpoint node's number, and normalized `(blockerNodeId, blockedNodeId, source)` tuples are unique and canonically ordered;
+4. selected `directBlockerNumbers` equals unique ascending incoming edge blocker numbers; unresolved blockers are a subset;
+5. nested selected/boundary diagnostics have `origin: "source"` and `issueNumber` equal to their node; top-level diagnostics satisfy origin/cycle rules below;
+6. completion PR numbers and OIDs are unique and canonically ordered; `complete` has both non-empty, `unknown` has both empty, and `incomplete` permits either empty or non-empty evidence;
+7. disposition/level constraints;
+8. levels/batches constraints;
+9. fingerprint format.
 
 It also validates these output cross-field constraints without recalculating the dependency graph:
 
@@ -449,12 +484,12 @@ It also validates these output cross-field constraints without recalculating the
 - levels are consecutive unique integers beginning at 1. A level contains exactly selected issue numbers whose `level` equals it; completed/invalid/null-level issues appear in no batch.
 - each batch is non-empty, ascending, at most `maxConcurrency`, and batches are the consecutive partition of the level's ascending issue numbers.
 
-It does not verify whether edges justify dispositions/levels, whether diagnostics justify `runnable`, or whether the fingerprint matches content. Composite entries use expected label `plain object`; required fields use their scalar/object/array label; fingerprint format uses `64-character lowercase hexadecimal string`; a duplicate-bearing array uses `unique values`; and any array violating its declared comparator uses `canonical order`. The failing JSONPath identifies which array. `canonicalizePlan` does not silently sort or deduplicate caller-supplied plans. Required fields are checked first in declaration order. Then additional keys are checked in Unicode code-point order; the first extra key throws `TypeError("Cannot canonicalize plan at {path}: malformed WavePlanV1; expected no additional property.")`. The first missing/wrong required field throws `TypeError("Cannot canonicalize plan at {path}: malformed WavePlanV1; expected {expected}.")`, using the same canonical paths and expected labels as structural validation.
+It does not verify whether edges justify dispositions/levels, whether diagnostics justify `runnable`, or whether the fingerprint matches content. Composite entries use expected label `plain data object`; required fields use their scalar/object/array label; fingerprint format uses `64-character lowercase hexadecimal string`; a duplicate-bearing array uses `unique values`; and any array violating its declared comparator uses `canonical order`. The failing JSONPath identifies which array. `canonicalizePlan` does not silently sort or deduplicate caller-supplied plans. Required fields are checked first in declaration order. Then additional keys are checked in Unicode code-point order; the first extra key throws `TypeError("Cannot canonicalize plan at {path}: malformed WavePlanV1; expected no additional property.")`. The first missing/wrong required field throws `TypeError("Cannot canonicalize plan at {path}: malformed WavePlanV1; expected {expected}.")`, using the same canonical paths and expected labels as structural validation.
 
 Representative exact failures:
 
 ```text
-Cannot canonicalize plan at $.config: malformed WavePlanV1; expected plain object.
+Cannot canonicalize plan at $.config: malformed WavePlanV1; expected plain data object.
 Cannot canonicalize plan at $.selected[0].extra: malformed WavePlanV1; expected no additional property.
 Cannot canonicalize plan at $.selected: malformed WavePlanV1; expected canonical order.
 Cannot canonicalize plan at $.fingerprint: malformed WavePlanV1; expected 64-character lowercase hexadecimal string.
@@ -581,14 +616,23 @@ Commit canonical JSON fixtures for:
 
 ## Implementation plan boundaries
 
-This specification maps to one implementation plan with four ordered tasks:
+This specification requires two separately reviewed implementation plans:
 
-1. contracts, constants, and structural validation;
-2. deterministic graph normalization, cycle detection, and classification;
-3. canonicalization and fingerprinting;
-4. unit, property, immutability, and golden-fixture tests plus public exports.
+### Plan A — validator and graph planner
 
-No task may introduce adapters, Markdown, config files, pi APIs, or process execution.
+1. contracts, constants, safe runtime inspection, and phased structural validation;
+2. deterministic graph normalization, closure validation, SCC condensation, classification, levels, and batches;
+3. contract/graph/property/immutability tests for an internal `UnfingerprintedWavePlanV1` result.
+
+Plan A does not export `planWaves` or `canonicalizePlan`; its internal API is allowed only from Plan B tests/code.
+
+### Plan B — canonicalization and final public API
+
+1. strict closed-schema `canonicalizePlan` and exact failure tests;
+2. fingerprint projection, canonical payload serializer, and SHA-256;
+3. final `planWaves`, public exports, golden fixtures, and end-to-end domain determinism tests.
+
+Neither plan may introduce adapters, Markdown, config files, pi APIs, or process execution. Planning begins with Plan A; Plan B is blocked by Plan A.
 
 ## Acceptance criteria
 
