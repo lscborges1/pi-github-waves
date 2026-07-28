@@ -46,6 +46,24 @@ describe("dependency graph traversal complexity", () => {
     assertLinear(graph(nodes, edges));
   });
 
+  it("counts a converging blocker once during relevant discovery", () => {
+    const input = graph(
+      [
+        { id: "root", issueNumber: 1, status: "eligible" },
+        { id: "left", issueNumber: 2, status: "eligible" },
+        { id: "right", issueNumber: 3, status: "eligible" },
+        { id: "sink", issueNumber: 4, status: "eligible" },
+      ],
+      [
+        { blockerId: "root", blockedId: "left" },
+        { blockerId: "root", blockedId: "right" },
+        { blockerId: "left", blockedId: "sink" },
+        { blockerId: "right", blockedId: "sink" },
+      ],
+    );
+    assertLinear(input);
+  });
+
   it("stays within a fixed linear-pass bound for a wide DAG", () => {
     const nodes = Array.from({ length: 50 }, (_, index) => ({
       id: `n-${index}`,

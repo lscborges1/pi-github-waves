@@ -10,7 +10,11 @@ import {
   type GraphValidationOutcome,
   type ValidatedGraph,
 } from "./contracts.js";
-import { compareNumberThenId, compareOpaqueId } from "./compare.js";
+import {
+  compareNumberThenId,
+  compareOpaqueId,
+  compareUnicodeCodePoints,
+} from "./compare.js";
 
 function isPositiveSafeInteger(value: number): boolean {
   return (
@@ -28,7 +32,7 @@ function normalizeNumber(value: number): number | string {
 
 function stableDetails(details: GraphError["details"]): string {
   return Object.keys(details)
-    .sort(compareOpaqueId)
+    .sort(compareUnicodeCodePoints)
     .map((key) => {
       const value = details[key];
       return `${key}=${typeof value === "number" ? String(value) : JSON.stringify(value)}`;
@@ -45,8 +49,8 @@ function sortErrors(errors: GraphError[]): GraphError[] {
       if (numberOrder !== 0) return numberOrder;
     }
     return (
-      compareOpaqueId(a.code, b.code) ||
-      compareOpaqueId(stableDetails(a.details), stableDetails(b.details))
+      compareUnicodeCodePoints(a.code, b.code) ||
+      compareUnicodeCodePoints(stableDetails(a.details), stableDetails(b.details))
     );
   });
 }

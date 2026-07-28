@@ -153,6 +153,28 @@ describe("validateGraph", () => {
     ]);
   });
 
+  it("orders error details by Unicode code points rather than UTF-16 units", () => {
+    const bmp = "\uE000";
+    const supplementary = "\u{10000}";
+    const input = validInput();
+    input.nodes = [];
+    input.selectedIds = [supplementary, bmp];
+    input.edges = [];
+
+    expect(errors(input)).toEqual([
+      {
+        code: "selected_node_missing",
+        issueNumber: null,
+        details: { id: bmp },
+      },
+      {
+        code: "selected_node_missing",
+        issueNumber: null,
+        details: { id: supplementary },
+      },
+    ]);
+  });
+
   it("validates selected and boundary statuses", () => {
     const input = validInput();
     input.nodes = [

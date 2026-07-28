@@ -21,6 +21,7 @@ export function buildRelevantGraph(
   const queue = graph.selectedIds.filter(
     (id) => graph.nodesById.get(id)?.status !== "complete",
   );
+  const enqueued = new Set(queue);
 
   let queueIndex = 0;
 
@@ -37,8 +38,9 @@ export function buildRelevantGraph(
       relevant.add(blockerId);
       if (
         graph.nodesById.get(blockerId)?.status !== "complete" &&
-        !expanded.has(blockerId)
+        !enqueued.has(blockerId)
       ) {
+        enqueued.add(blockerId);
         queue.push(blockerId);
       }
     }

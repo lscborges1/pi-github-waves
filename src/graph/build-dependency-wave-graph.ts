@@ -18,6 +18,13 @@ interface Classification {
   unresolved: number[];
 }
 
+function issueNumbersFor(
+  graph: ValidatedGraph,
+  ids: readonly string[],
+): number[] {
+  return ids.map((id) => graph.nodesById.get(id)!.issueNumber);
+}
+
 function selectedClassification(
   graph: ValidatedGraph,
   stronglyConnected: ReturnType<typeof findStronglyConnectedComponents>,
@@ -44,7 +51,7 @@ function selectedClassification(
   if (node.status === "invalid" || ownFacts.cycle) {
     return {
       disposition: "invalid",
-      unresolved: nonComplete.map((blockerId) => graph.nodesById.get(blockerId)!.issueNumber),
+      unresolved: issueNumbersFor(graph, nonComplete),
     };
   }
   if (node.status === "complete") {
@@ -63,18 +70,14 @@ function selectedClassification(
   if (invalidBlockers.length > 0) {
     return {
       disposition: "blocked_invalid_selected",
-      unresolved: invalidBlockers.map(
-        (blockerId) => graph.nodesById.get(blockerId)!.issueNumber,
-      ),
+      unresolved: issueNumbersFor(graph, invalidBlockers),
     };
   }
   const externalBlockers = blockersWithFact("unresolvedBoundary");
   if (externalBlockers.length > 0) {
     return {
       disposition: "blocked_external",
-      unresolved: externalBlockers.map(
-        (blockerId) => graph.nodesById.get(blockerId)!.issueNumber,
-      ),
+      unresolved: issueNumbersFor(graph, externalBlockers),
     };
   }
 
@@ -83,9 +86,7 @@ function selectedClassification(
     ? { disposition: "ready", unresolved: [] }
     : {
         disposition: "blocked_selected",
-        unresolved: selectedBlockers.map(
-          (blockerId) => graph.nodesById.get(blockerId)!.issueNumber,
-        ),
+        unresolved: issueNumbersFor(graph, selectedBlockers),
       };
 }
 
@@ -196,9 +197,7 @@ export function buildDependencyWaveGraphInternal(
       issueNumber: node.issueNumber,
       disposition: classification.disposition,
       level: classification.level,
-      directBlockerNumbers: (graph.incoming.get(id) ?? []).map(
-        (blockerId) => graph.nodesById.get(blockerId)!.issueNumber,
-      ),
+      directBlockerNumbers: issueNumbersFor(graph, graph.incoming.get(id) ?? []),
       unresolvedBlockerNumbers: [...classification.unresolved],
     };
   });
@@ -220,9 +219,7 @@ export function buildDependencyWaveGraphInternal(
   const cycles = stronglyConnected.components
     .filter((component) => component.cyclic)
     .map((component) => ({
-      issueNumbers: component.nodeIds.map(
-        (id) => graph.nodesById.get(id)!.issueNumber,
-      ),
+      issueNumbers: issueNumbersFor(graph, component.nodeIds),
     }));
 
   const runnable =
