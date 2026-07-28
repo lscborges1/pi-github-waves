@@ -24,13 +24,4 @@ export type {
   ValidatedGraph,
 } from "./contracts.js";
 
-import type {
-  DependencyGraphInput,
-  DependencyGraphOutcome,
-} from "./contracts.js";
-
-export function buildDependencyWaveGraph(
-  _input: DependencyGraphInput,
-): DependencyGraphOutcome {
-  throw new Error("Not implemented");
-}
+export { buildDependencyWaveGraph } from "./build-dependency-wave-graph.js";
