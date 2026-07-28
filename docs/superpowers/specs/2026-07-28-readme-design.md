@@ -24,7 +24,7 @@ Create a root-level English `README.md` that explains both the complete `pi-gith
 10. **Semantics/reference** — document node roles/statuses, edge direction, dispositions, runnable behavior, deterministic validation, completion barriers, cycle handling, complexity, and immutability.
 11. **Safety and non-goals** — summarize human merge, no dependency inference, no mutation before approval, no I/O in the current module, and no claims that roadmap features exist.
 12. **Development and roadmap** — include pnpm commands, source/test layout, and the five approved delivery slices.
-13. **License/contribution note** — invite discussion and contributions while accurately stating that no license file has been added and that public source availability does not itself grant permission to use, modify, or redistribute the code.
+13. **License/contribution note** — invite discussion and contributions while accurately stating that no open-source license has been added, avoiding interpretation of users’ legal rights, and noting that repository access remains subject to applicable law and platform terms.
 
 ## Diagram constraints
 
