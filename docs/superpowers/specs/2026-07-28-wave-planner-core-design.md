@@ -72,6 +72,7 @@ export type CompletionStatus = "complete" | "incomplete" | "unknown";
 export type DependencySource = "native" | "body";
 
 export interface SourceDiagnostic {
+  origin: "source";
   code: string;
   severity: "error" | "warning";
   issueNumber: number | null;
@@ -184,9 +185,20 @@ Validation runs in four deterministic phases.
 
 An available node requires non-null `state`, `updatedAt`, and `bodySha256`. An unavailable node requires those fields to be null, `eligibility: "invalid"`, `completion.status: "unknown"`, and empty completion evidence.
 
-Completion evidence is normalized by deduplicating and sorting PR numbers numerically and OIDs by Unicode code-point order. For three or more repetitions, exactly one `duplicate_completion_evidence` warning is emitted per node and field (`closingPullRequestNumbers` or `verifiedMergeCommitOids`), regardless of duplicate count. `complete` requires `state: "CLOSED"`, at least one PR number, at least one OID, and `eligibility: "not_required"`. `unknown` requires empty evidence. A selected available incomplete node requires `eligibility: "eligible"` or `"invalid"`. A selected available unknown node requires `eligibility: "invalid"` and will classify invalid. A boundary available incomplete/unknown node may use `eligible`, `invalid`, or `not_required`. A selected complete node requires `not_required`.
+Completion evidence is normalized by deduplicating and sorting PR numbers numerically and OIDs by Unicode code-point order. For any group of two or more identical values, exactly one `duplicate_completion_evidence` warning is emitted per node and field (`closingPullRequestNumbers` or `verifiedMergeCommitOids`), regardless of duplicate count. `complete` requires `state: "CLOSED"`, at least one PR number, at least one OID, and `eligibility: "not_required"`. `unknown` requires empty evidence. A selected available incomplete node requires `eligibility: "eligible"` or `"invalid"`. A selected available unknown node requires `eligibility: "invalid"` and will classify invalid. A boundary available incomplete/unknown node may use `eligible`, `invalid`, or `not_required`. A selected complete node requires `not_required`.
 
-A diagnostic in `node.sourceDiagnostics` must have `issueNumber === node.number`; otherwise emit `source_diagnostic_misattached`. A diagnostic in top-level `input.sourceDiagnostics` must have `issueNumber === null`. Source diagnostics are never deduplicated: each input occurrence is preserved once, then canonically sorted. Attached errors affect only their owning node; top-level errors are global. If Phase 2 has errors, edge validation does not run.
+A diagnostic in `node.sourceDiagnostics` must have `issueNumber === node.number`; otherwise emit `source_diagnostic_misattached`. A diagnostic in top-level `input.sourceDiagnostics` must have `issueNumber === null`. Source diagnostics are never deduplicated: each input occurrence is preserved once, then canonically sorted. Attached errors affect only their owning node; top-level errors are global.
+
+Cross-field diagnostics have fixed cardinality per node:
+
+| Check | Code | Emission |
+|---|---|---|
+| Availability versus `state`/`updatedAt`/`bodySha256` nullability | `node_state_inconsistent` | At most one per node if any listed field conflicts |
+| Completion status versus state and normalized evidence presence/absence | `completion_inconsistent` | At most one per node |
+| Selected/boundary role, availability, completion status versus eligibility | `eligibility_inconsistent` | At most one per node |
+| Evidence item scalar validity | `completion_evidence_invalid` | Phase 1 only, once per invalid array position; Phase 2 never repeats it |
+
+A node may receive one diagnostic from each of the first three rows when all three independent relationships fail. Checks run in table order. Phase 1 evidence errors stop before this table. If Phase 2 has errors, edge validation does not run.
 
 **Phase 3 — edges:** every endpoint exists; self-edges are invalid. Dependency count is the number of distinct blocker node IDs for a blocked node after grouping exact duplicates and before discarding source-conflicting groups. At most 100 are allowed. Any group of two or more identical edges emits exactly one `duplicate_edge` warning regardless of multiplicity and collapses to one edge. Same endpoints with different sources emit one `duplicate_edge_conflict`; no edge from that endpoint group is chosen. If Phase 3 has errors, no graph is returned.
 
@@ -246,6 +258,7 @@ export interface PlannedBoundaryIssueV1 {
 }
 
 export interface PlanDiagnostic {
+  origin: "core" | "source";
   code: string;
   severity: "error" | "warning";
   issueNumber: number | null;
@@ -359,7 +372,7 @@ Batches estimate display parallelism only. They do not imply a global runtime ba
 
 ## Diagnostics
 
-`plan.diagnostics` contains each occurrence of every top-level source diagnostic and node-attached source diagnostic exactly once, plus every core warning and cycle diagnostic. Identical source diagnostic occurrences are preserved rather than deduplicated. `PlannedSelectedIssueV1.diagnostics` and `PlannedBoundaryIssueV1.diagnostics` contain only source diagnostics attached to that node; global and core diagnostics are not copied into nodes. Structural misattachment prevents a plan, so a planned result cannot contain an attached diagnostic for another issue.
+`plan.diagnostics` contains each occurrence of every top-level source diagnostic and node-attached source diagnostic exactly once, plus every core warning and cycle diagnostic. Identical source diagnostic occurrences are preserved rather than deduplicated. Copied source diagnostics keep `origin: "source"`; every generated diagnostic has `origin: "core"`. Source codes are unrestricted and may equal core codes because the origin is part of identity, sorting, and fingerprinting. `PlannedSelectedIssueV1.diagnostics` and `PlannedBoundaryIssueV1.diagnostics` contain only source diagnostics attached to that node; global and core diagnostics are not copied into nodes. Structural misattachment prevents a plan, so a planned result cannot contain an attached diagnostic for another issue.
 
 Core messages and issue-number attribution are fixed:
 
@@ -390,25 +403,26 @@ Core messages and issue-number attribution are fixed:
 | `duplicate_edge` | blocked issue | `Duplicate edge collapsed: #{blocker} -> #{blocked} ({source}).` |
 | `duplicate_completion_evidence` | node issue | `Duplicate completion evidence collapsed for issue #{n}: {field}.` |
 
-`{field}` is a canonical JSONPath using `$`, dot-separated object keys, and numeric brackets, for example `$.nodes[2].completion.status`; array positions refer to original input positions. `{expected}` is one of the fixed labels `plain object`, `array`, `string`, `positive safe integer`, `integer 1..8`, `null`, or the literal union joined by ` | `. `{actual}` is exactly `null`, `array`, or JavaScript `typeof value`. `{jsonValue}` and `{jsonString}` use `JSON.stringify`; if it returns undefined, use `typeof value`. Counts use base-10 integers. The cycle placeholder is formatted as `#3, #4, #8`. Completion `{field}` is exactly `closingPullRequestNumbers` or `verifiedMergeCommitOids`. Other diagnostic field placeholders use the canonical JSONPath. These templates live in `diagnostics.ts`; golden tests assert exact output.
+`{field}` is a canonical JSONPath using `$`, dot-separated object keys, and numeric brackets, for example `$.nodes[2].completion.status`; array positions refer to original input positions. `{expected}` uses these exact rules: primitive labels are `plain object`, `array`, `string`, `number`, or `positive safe integer`; literal unions list literals in their TypeScript declaration order without quotes, joined by ` | `; nullable fields append ` | null`. Examples are `string | null`, `OPEN | CLOSED | null`, and `positive safe integer | null`. Bounded concurrency uses `integer 1..8`. `{actual}` is exactly `null`, `array`, or JavaScript `typeof value`. `{jsonValue}` and `{jsonString}` use `JSON.stringify`; if it returns undefined, use `typeof value`. Counts use base-10 integers. The cycle placeholder is formatted as `#3, #4, #8`. Completion `{field}` is exactly `closingPullRequestNumbers` or `verifiedMergeCommitOids`. Other diagnostic field placeholders use the canonical JSONPath. These templates live in `diagnostics.ts`; golden tests assert exact output.
 
 Canonical diagnostic ordering:
 
 1. `issueNumber: null` before numbered issues;
 2. issue number ascending;
-3. severity `error` before `warning`;
-4. code by Unicode code-point order;
-5. message by Unicode code-point order;
-6. cycle sequence lexicographically when present.
+3. origin `core` before `source`;
+4. severity `error` before `warning`;
+5. code by Unicode code-point order;
+6. message by Unicode code-point order;
+7. cycle sequence lexicographically when present.
 
 Messages are developer-facing English constants generated from deterministic templates. Fingerprinting excludes diagnostic messages and includes only diagnostic code, severity, issue number, and cycle numbers so wording changes do not alter identity.
 
 ## Canonicalization and fingerprint
 
-`canonicalizePlan(plan)` returns UTF-8 JSON. Before serialization it performs two deterministic checks:
+`canonicalizePlan(plan)` returns UTF-8 JSON. Runtime `WavePlanV1` objects are closed schemas: unknown properties at any depth are rejected, not retained. Before serialization it performs two deterministic checks:
 
 1. A depth-first walk visits object keys in Unicode code-point order and array indexes ascending. It tracks an ancestor `WeakSet`; the first repeated ancestor reference throws `TypeError("Cannot canonicalize plan at {path}: cyclic reference.")`. At the first prohibited value it throws `TypeError("Cannot canonicalize plan at {path}: prohibited {reason}.")`, where reason is exactly `undefined`, `non-finite number`, `negative zero`, `bigint`, `symbol`, `function`, `non-plain object`, `Map`, `Set`, or `Date`.
-2. The validated acyclic JSON value is checked against the complete `WavePlanV1` runtime schema in declared interface-field order, recursively through selected, boundary, edges, levels/batches, diagnostics, and completion evidence. The first missing/wrong field throws `TypeError("Cannot canonicalize plan at {path}: malformed WavePlanV1; expected {expected}.")`, using the same canonical paths and expected labels as structural validation.
+2. The validated acyclic JSON value is checked against the complete `WavePlanV1` runtime schema in declared interface-field order, recursively through selected, boundary, edges, levels/batches, diagnostics, and completion evidence. Required fields are checked first in declaration order. Then additional keys are checked in Unicode code-point order; the first extra key throws `TypeError("Cannot canonicalize plan at {path}: malformed WavePlanV1; expected no additional property.")`. The first missing/wrong required field throws `TypeError("Cannot canonicalize plan at {path}: malformed WavePlanV1; expected {expected}.")`, using the same canonical paths and expected labels as structural validation.
 
 It then serializes with:
 
@@ -493,7 +507,7 @@ Cover chains, diamonds, disconnected components, completed blockers, selected co
 
 Property tests permute nodes, edges, selected IDs, source-diagnostic occurrence order, PR evidence, and OIDs. Pure permutations must produce equal canonical ordering and fingerprints. Changing only source diagnostic message text may change canonical plan JSON, because messages are preserved, but must not change dispositions, levels, or fingerprints. `inputOrder` may differ in returned plans but not fingerprints.
 
-Canonicalizer tests cover every prohibited value, cyclic roots and nested cycles, non-plain objects, missing top-level and nested fields, wrong arrays/scalars, deterministic first-error paths, and exact `TypeError` messages.
+Canonicalizer tests cover every prohibited value, cyclic roots and nested cycles, non-plain objects, missing top-level and nested fields, unknown top-level and nested properties, wrong arrays/scalars, deterministic first-error paths, and exact `TypeError` messages. Diagnostic tests include source/core code collisions and verify origin-aware sorting and fingerprints.
 
 ### Immutability
 
