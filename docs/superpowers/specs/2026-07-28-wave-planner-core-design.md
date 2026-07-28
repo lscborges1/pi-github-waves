@@ -176,11 +176,9 @@ export type CoreWarningCode =
 
 Validation runs in four deterministic phases.
 
-**Phase 0 — runtime shape:** the root, repository, config, every node, every completion object, every source diagnostic, and every edge must be non-null plain objects (`Object.getPrototypeOf(value)` is `Object.prototype` or `null`). `inputOrder`, `selectedNodeIds`, `nodes`, `edges`, both completion arrays, and both diagnostic arrays must be arrays. Enum fields must equal a declared literal. Numbers must have the declared integer/null shape. A malformed value emits `invalid_type` at the deepest safely attributable JSON path. If a containing value is malformed, descendants are not inspected. If Phase 0 has errors, later phases do not run.
+**Phase 0 — runtime shape only:** the root, repository, config, every node, every completion object, every source diagnostic, and every edge must be non-null plain objects (`Object.getPrototypeOf(value)` is `Object.prototype` or `null`). Declared collections must be arrays. Required scalar fields must have their primitive type; nullable fields may additionally be null. Enum fields must equal a declared literal. Phase 0 does not check emptiness, numeric integer/range semantics, uniqueness, cross-field consistency, or completion evidence semantics. A malformed value emits `invalid_type` at the deepest safely attributable JSON path. If a container is malformed, descendants are not inspected. If Phase 0 has errors, later phases do not run.
 
-All string fields are runtime-checked. These must be non-empty and not whitespace-only: repository `nodeId`, `owner`, `name`, `defaultBranch`, `defaultBranchTipOid`; node `nodeId`, `title`, `url`; non-null `updatedAt` and `bodySha256`; edge endpoint IDs; completion OIDs; diagnostic `code` and `message`; every selected node ID. Diagnostic severity must be `error` or `warning`; diagnostic issue number must be null or a positive safe integer. These checks use `invalid_identifier`, `invalid_issue_number`, or `invalid_type` as appropriate.
-
-**Phase 1 — identity:** schema, concurrency, non-empty identifiers, positive issue numbers, and duplicate node IDs/numbers. If Phase 1 has errors, validation returns all Phase 0/1 errors and warnings and does not resolve selections or edges, because duplicate identity makes attribution unsafe.
+**Phase 1 — scalar values and identity:** check schema value, concurrency integer/range, non-empty strings, positive safe integers, and duplicate node IDs/numbers. The non-empty string rule covers repository identity fields; node IDs/titles/URLs; non-null timestamps/body hashes; edge endpoints; completion OIDs; diagnostic codes/messages; and selected IDs. Diagnostic issue numbers and completion PR numbers must be positive safe integers when non-null/present. Empty/whitespace strings use `invalid_identifier`; numeric values with the right primitive type but invalid integer/range semantics use `invalid_issue_number`, `completion_evidence_invalid`, or `concurrency_out_of_range`. If Phase 1 has errors, later phases do not run because identity may be unsafe.
 
 **Phase 2 — node and selection consistency:** selected IDs are resolved. Duplicate selected IDs are errors. The selected limit is the number of distinct valid selected ID strings, whether or not each resolves. Boundary count is the number of nodes whose IDs are absent from that distinct selected-ID set. Limits are checked here. Missing selected IDs then emit `selected_node_missing`. `inputOrder` contains exactly the issue numbers of resolved selected nodes once each; when any selected ID is missing, `input_order_mismatch` is not additionally emitted because no issue number exists for comparison.
 
@@ -192,7 +190,27 @@ A diagnostic in `node.sourceDiagnostics` must have `issueNumber === node.number`
 
 **Phase 3 — edges:** every endpoint exists; self-edges are invalid. Dependency count is the number of distinct blocker node IDs for a blocked node after grouping exact duplicates and before discarding source-conflicting groups. At most 100 are allowed. Any group of two or more identical edges emits exactly one `duplicate_edge` warning regardless of multiplicity and collapses to one edge. Same endpoints with different sources emit one `duplicate_edge_conflict`; no edge from that endpoint group is chosen. If Phase 3 has errors, no graph is returned.
 
-All diagnostics safe within a phase are aggregated. Later phases never run after an earlier phase error. Warnings discovered before failure remain in `invalid_input`. Any structural error returns `invalid_input` with no plan or fingerprint. Graph cycles are not structural.
+All core diagnostics safe within a phase are aggregated. Later phases never run after an earlier phase error. Warnings discovered before failure remain in `invalid_input`. Source diagnostics are never included in `invalid_input`; they are observational inputs copied only into a successfully constructed `WavePlanV1`. This applies even when source diagnostics passed Phase 0/2 validation before a Phase 3 structural failure. Any structural error returns `invalid_input` with no plan or fingerprint. Graph cycles are not structural.
+
+### Validation matrix and emission cardinality
+
+| Representative value | Phase | Code | Attribution | Cardinality |
+|---|---:|---|---|---|
+| `nodes: null` | 0 | `invalid_type` | null | once for `$.nodes` |
+| `maxConcurrency: "3"` | 0 | `invalid_type` | null | once for field |
+| `maxConcurrency: 3.5` or `9` | 1 | `concurrency_out_of_range` | null | once for field |
+| `number: "3"` | 0 | `invalid_type` | null | once for field |
+| `number: 0` or `3.5` | 1 | `invalid_issue_number` | null | once for field |
+| empty node ID/title/URL | 1 | `invalid_identifier` | node number if safely valid, else null | once per field path |
+| non-array completion evidence | 0 | `invalid_type` | node number if safely valid, else null | once per field |
+| PR evidence `0`/`1.5` | 1 | `completion_evidence_invalid` | node number | once per invalid array position |
+| empty OID | 1 | `completion_evidence_invalid` | node number | once per invalid array position |
+| duplicate node ID | 1 | `duplicate_node_id` | null | once per duplicated ID group |
+| duplicate issue number | 1 | `duplicate_issue_number` | duplicated number | once per duplicated-number group |
+| duplicate selected ID | 2 | `duplicate_selected_node_id` | resolved issue when unique resolution exists, else null | once per duplicated ID group |
+| repeated identical edge | 3 | `duplicate_edge` | blocked issue | once per endpoint/source group |
+
+For all field validation, emit at most one diagnostic per `(code, canonical field path)`. Duplicate-group diagnostics emit once per unique normalized group regardless of group size. Different invalid fields produce separate diagnostics. Core diagnostics are canonically sorted before return.
 
 ## Output contract
 
@@ -311,7 +329,7 @@ For every selected disposition, `directBlockerNumbers` is all direct incoming bl
 
 - `completed_preexisting`: empty;
 - `invalid`: direct blockers that are not effectively complete;
-- `blocked_invalid_selected`: direct blockers from which an invalid selected node or active cycle is reachable without crossing effective completion;
+- `blocked_invalid_selected`: direct blockers from which a selected node invalid for its own availability, eligibility, or source error is reachable without crossing effective completion. Cycle membership is intentionally excluded here: any selected issue depending on an active cycle is itself `invalid` at precedence priority 1;
 - `blocked_external`: direct blockers from which an unresolved boundary node is reachable without crossing effective completion;
 - `ready`: empty;
 - `blocked_selected`: direct, incomplete, valid selected blockers.
@@ -341,7 +359,7 @@ Batches estimate display parallelism only. They do not imply a global runtime ba
 
 ## Diagnostics
 
-`plan.diagnostics` contains, exactly once, every top-level source diagnostic, every node-attached source diagnostic, every core warning, and every cycle diagnostic. `PlannedSelectedIssueV1.diagnostics` and `PlannedBoundaryIssueV1.diagnostics` contain only source diagnostics attached to that node; global and core diagnostics are not copied into nodes. Structural misattachment prevents a plan, so a planned result cannot contain an attached diagnostic for another issue.
+`plan.diagnostics` contains each occurrence of every top-level source diagnostic and node-attached source diagnostic exactly once, plus every core warning and cycle diagnostic. Identical source diagnostic occurrences are preserved rather than deduplicated. `PlannedSelectedIssueV1.diagnostics` and `PlannedBoundaryIssueV1.diagnostics` contain only source diagnostics attached to that node; global and core diagnostics are not copied into nodes. Structural misattachment prevents a plan, so a planned result cannot contain an attached diagnostic for another issue.
 
 Core messages and issue-number attribution are fixed:
 
@@ -387,7 +405,12 @@ Messages are developer-facing English constants generated from deterministic tem
 
 ## Canonicalization and fingerprint
 
-`canonicalizePlan(plan)` returns UTF-8 JSON with:
+`canonicalizePlan(plan)` returns UTF-8 JSON. Before serialization it performs two deterministic checks:
+
+1. A depth-first walk visits object keys in Unicode code-point order and array indexes ascending. It tracks an ancestor `WeakSet`; the first repeated ancestor reference throws `TypeError("Cannot canonicalize plan at {path}: cyclic reference.")`. At the first prohibited value it throws `TypeError("Cannot canonicalize plan at {path}: prohibited {reason}.")`, where reason is exactly `undefined`, `non-finite number`, `negative zero`, `bigint`, `symbol`, `function`, `non-plain object`, `Map`, `Set`, or `Date`.
+2. The validated acyclic JSON value is checked against the complete `WavePlanV1` runtime schema in declared interface-field order, recursively through selected, boundary, edges, levels/batches, diagnostics, and completion evidence. The first missing/wrong field throws `TypeError("Cannot canonicalize plan at {path}: malformed WavePlanV1; expected {expected}.")`, using the same canonical paths and expected labels as structural validation.
+
+It then serializes with:
 
 - object keys recursively sorted by Unicode code-point order;
 - no insignificant whitespace;
@@ -466,9 +489,11 @@ Cover every invariant and stable diagnostic code, including null/missing roots, 
 
 Cover chains, diamonds, disconnected components, completed blockers, selected completion, completed nodes with source errors, unresolved/unknown boundaries, direct and transitive invalid selected blockers, mixed invalid/external precedence, direct and transitive external blockers, traversal stopping at completion, self-edge rejection, selected cycles, boundary-only cycles, direct cycle blockers, cycle dependents, and unaffected siblings.
 
-### Determinism
+### Determinism and canonicalizer failures
 
-Property tests permute nodes, edges, selected IDs, source diagnostics, labels represented in source messages, PR evidence, and OIDs. Equivalent inputs must produce equal dispositions, levels, canonical ordering, and fingerprints. `inputOrder` may differ in returned plans but not fingerprints.
+Property tests permute nodes, edges, selected IDs, source-diagnostic occurrence order, PR evidence, and OIDs. Pure permutations must produce equal canonical ordering and fingerprints. Changing only source diagnostic message text may change canonical plan JSON, because messages are preserved, but must not change dispositions, levels, or fingerprints. `inputOrder` may differ in returned plans but not fingerprints.
+
+Canonicalizer tests cover every prohibited value, cyclic roots and nested cycles, non-plain objects, missing top-level and nested fields, wrong arrays/scalars, deterministic first-error paths, and exact `TypeError` messages.
 
 ### Immutability
 
