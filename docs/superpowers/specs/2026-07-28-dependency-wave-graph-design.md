@@ -61,7 +61,7 @@ export interface DependencyEdge {
 }
 
 export interface DependencyGraphInput {
-  schemaVersion: 1;
+  schemaVersion: number;
   maxConcurrency: number;
   selectedIds: string[];
   nodes: DependencyNode[];
@@ -125,6 +125,7 @@ export type GraphErrorCode =
   | "selected_node_missing"
   | "selected_status_invalid"
   | "boundary_status_invalid"
+  | "unreachable_boundary_node"
   | "edge_endpoint_missing"
   | "self_dependency"
   | "duplicate_edge";
@@ -162,18 +163,18 @@ Allowed status by role:
 
 ## Graph-level validation
 
-Validation runs in this exact order. All safe errors in a row are collected; if a row emits errors, later rows do not run.
+Validation runs in this exact order. Every check listed in the current row runs over the original input, using only facts that row declares valid. If a row emits any errors, later rows do not run. There is no within-row short circuit except the per-edge-group precedence in Row 3. This is the complete meaning of “collect errors”; no other inferred errors are emitted.
 
 ### Row 1: scalar values and limits
 
 - `schemaVersion` must equal 1.
 - `maxConcurrency` must be an integer from 1 through 8.
 - Node IDs must be non-empty after ECMAScript `trim()`.
-- Issue numbers must be positive safe integers.
+- Issue numbers must be finite positive safe integers. `NaN`, infinities, and negative zero are invalid.
 - Selected IDs must be non-empty after `trim()`.
 - Limits: at most 50 unique selected IDs, 200 non-selected nodes, and 10,000 input edges.
 
-One error is emitted per invalid field. Limit errors emit once per exceeded limit.
+First scan all nodes and record scalar validity by original node index. Emit one error per invalid node ID field and one per invalid issue-number field. Limits are computed independently and emit once per exceeded limit: selected count is distinct raw selected strings; boundary count is input nodes whose raw `id` is absent from that distinct raw-selected set; edge count is `edges.length`. If Row 1 has any error, duplicate/role resolution does not run.
 
 ### Row 2: identity and roles
 
@@ -198,40 +199,55 @@ This module treats duplicate edges as errors rather than warnings. No normalized
 
 ### Row 4: closure
 
-Traverse incoming edges from all selected nodes without completion barriers. Every boundary node must be reached. An unreachable boundary emits `boundary_status_invalid` with `details.reason = "unreachable"` once per node.
+Traverse incoming edges from all selected nodes without completion barriers. Every boundary node must be reached. An unreachable boundary emits `unreachable_boundary_node` once per node.
 
-### Error ordering
+### Exact error contract
+
+Numeric detail values are normalized before constructing `GraphError`: finite non-negative-zero numbers remain numbers; `NaN`, `Infinity`, `-Infinity`, and `-0` become those exact strings. Original node indexes are zero-based.
+
+| Code | Cardinality | `issueNumber` | Exact `details` |
+|---|---|---:|---|
+| `schema_version_unsupported` | once | null | `{ actual, expected: 1 }` |
+| `concurrency_out_of_range` | once | null | `{ actual, expected: "integer 1..8" }` |
+| `selected_limit_exceeded` | once | null | `{ actual, maximum: 50 }` |
+| `boundary_limit_exceeded` | once | null | `{ actual, maximum: 200 }` |
+| `edge_limit_exceeded` | once | null | `{ actual, maximum: 10000 }` |
+| `invalid_node_id` | once per invalid field | valid unique issue number if Row-1-valid, else null | `{ nodeIndex, value: id }` |
+| `invalid_issue_number` | once per invalid field | null | `{ nodeIndex, value: normalizedNumber }` |
+| `duplicate_node_id` | once per duplicated valid ID group | null | `{ id }` |
+| `duplicate_issue_number` | once per duplicated valid number group | duplicated number | `{ issueNumber }` |
+| `duplicate_selected_id` | once per group | resolved node number, else null | `{ id }` |
+| `selected_node_missing` | once per distinct missing ID | null | `{ id }` |
+| `selected_status_invalid` | once per node | node number | `{ role: "selected", status }` |
+| `boundary_status_invalid` | once per node | node number | `{ role: "boundary", status }` |
+| `unreachable_boundary_node` | once per node | node number | `{ reason: "unreachable" }` |
+| `edge_endpoint_missing` | once per exact edge group | resolved blocked number, else null | `{ blockedId, blockerId }` |
+| `self_dependency` | once per endpoint pair | node number | `{ blockedId, blockerId }` |
+| `duplicate_edge` | once per endpoint pair | blocked node number | `{ blockedId, blockerId, occurrences }` |
+
+For `invalid_node_id`, issue-number uniqueness is evaluated among Row-1-valid issue numbers even though Row 2 will not run. Duplicate groups contain only Row-1-valid scalar values. Status values are contract literals.
 
 Errors are sorted by:
 
 1. `issueNumber: null` before numbered errors;
 2. issue number ascending;
 3. code in Unicode code-point order;
-4. `details` serialized with keys in Unicode code-point order.
+4. stable details string.
 
-`details` keys are stable:
-
-- duplicate IDs: `{ id }`;
-- duplicate/malformed numbers: `{ issueNumber }` when representable;
-- missing selected: `{ id }`;
-- status: `{ status, role }`;
-- endpoint: `{ blockerId, blockedId }`;
-- limits: `{ actual, maximum }`;
-- concurrency/schema: `{ actual, expected }`;
-- unreachable boundary: `{ reason: "unreachable" }`.
+The stable details string sorts keys by Unicode code-point order and joins `key=value` pairs with `;`. Number values use base-10 `String(value)` and strings use `JSON.stringify(value)`. All numeric details have already been normalized, so this serialization never receives non-finite numbers.
 
 ## Completion barrier and relevant graph
 
 Validation uses the unbarriered graph, but planning uses a relevant active graph:
 
-1. Start at each selected node that is not `complete`.
-2. For each direct incoming blocker:
-   - include the blocker itself;
-   - if the blocker is `complete`, stop that path;
-   - otherwise continue through its incoming blockers.
-3. Selected nodes with `complete` status remain in output but are not active roots.
+1. Start at each selected node that is not `complete`; add it to `relevantNodes`.
+2. For each incoming edge to a relevant non-complete node, add that edge to `relevantEdges` and add its blocker to `relevantNodes`.
+3. If that blocker is `complete`, do not inspect any of its incoming edges. Otherwise continue recursively.
+4. Selected nodes with `complete` status remain in output but are not relevant roots.
+5. Define `activeNodes` as relevant nodes whose status is not `complete`.
+6. Define `activeEdges` as relevant edges whose blocker and blocked endpoints are both in `activeNodes`.
 
-A cycle entirely upstream of a complete blocker is irrelevant and is not reported. A cycle is relevant only if it exists in this active graph. Boundary output still contains every boundary input node; `relevant` records membership in the active graph.
+Tarjan and all propagation use exactly `(activeNodes, activeEdges)`. An edge into a complete blocker is never added because traversal stops before inspecting that blocker's incoming edges; an edge out of a complete blocker may be relevant for explanation but is excluded from `activeEdges`. A cycle entirely upstream of a complete blocker is irrelevant and is not reported. A cycle is relevant only if it exists in this active graph. Boundary output still contains every boundary input node; `relevant` records membership in the active graph.
 
 All output edges are retained for explanation, including edges incident to complete or irrelevant nodes.
 
@@ -249,7 +265,7 @@ Input array order never affects output.
 
 ## Cycle detection
 
-Run Tarjan's strongly connected components algorithm only on the relevant active graph.
+Run Tarjan's strongly connected components algorithm only on `(activeNodes, activeEdges)`.
 
 A component is cyclic when it has more than one node. Self-edges were rejected during validation. Each cycle output contains unique ascending issue numbers. Cycles sort lexicographically by their numeric arrays.
 
@@ -343,7 +359,9 @@ Test selected cycles, boundary cycles, selected-to-boundary cycles, cycle depend
 
 ### Determinism and complexity
 
-Property tests permute nodes, edges, and selected IDs and require deep-equal output. Instrument adjacency visits on large synthetic DAGs to assert a constant multiple of `V + E`, preventing per-selected full traversals.
+Property tests permute nodes, edges, and selected IDs and require deep-equal output.
+
+`build-dependency-wave-graph.ts` also exports `buildDependencyWaveGraphInternal(input, metrics)` only from its source file, not from `src/graph/index.ts` or package exports. `metrics` is a test-only mutable `{ nodeVisits: number; edgeVisits: number }`; production `buildDependencyWaveGraph` creates no metrics and calls the same internal implementation. Every adjacency-node examination increments `nodeVisits` once and every adjacency-edge examination increments `edgeVisits` once at the examination site. Large synthetic DAG tests assert each counter is at most `4 * (V + E)`, preventing per-selected full traversals.
 
 ### Immutability
 
