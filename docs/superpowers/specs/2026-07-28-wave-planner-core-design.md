@@ -143,6 +143,8 @@ export type CoreErrorCode =
   | "boundary_limit_exceeded"
   | "dependency_limit_exceeded"
   | "concurrency_out_of_range"
+  | "invalid_identifier"
+  | "invalid_issue_number"
   | "duplicate_node_id"
   | "duplicate_issue_number"
   | "duplicate_selected_node_id"
@@ -153,39 +155,35 @@ export type CoreErrorCode =
   | "self_dependency"
   | "node_state_inconsistent"
   | "completion_inconsistent"
+  | "completion_evidence_invalid"
   | "eligibility_inconsistent"
+  | "source_diagnostic_misattached"
   | "dependency_cycle";
 ```
 
 Core warnings use:
 
 ```ts
-export type CoreWarningCode = "duplicate_edge";
+export type CoreWarningCode =
+  | "duplicate_edge"
+  | "duplicate_completion_evidence";
 ```
 
-### Invariants
+### Invariants and validation phases
 
-- `plannerSchemaVersion` must equal `1`.
-- `maxConcurrency` must be an integer from 1 through 8.
-- Node IDs and issue numbers are unique. Issue numbers are positive safe integers.
-- Selected IDs are unique, exist in `nodes`, and number at most 50.
-- `inputOrder` contains exactly the selected issue numbers once each; order may differ from canonical order.
-- Non-selected nodes number at most 200.
-- Every edge endpoint exists.
-- A node has at most 100 unique incoming blockers.
-- Self-edges are invalid.
-- Duplicate edges with the same endpoints and source produce one warning and collapse to one edge.
-- Duplicate edges with the same endpoints but different sources produce `duplicate_edge_conflict`; the core does not choose a source.
-- `availability !== "available"` requires `state`, `updatedAt`, and `bodySha256` to be `null`, `eligibility: "invalid"`, and `completion.status: "unknown"` with empty evidence.
-- `completion.status: "complete"` requires `state: "CLOSED"`, at least one closing PR number, at least one verified merge OID, and `eligibility: "not_required"`.
-- `completion.status: "incomplete"` requires an available node and cannot use `eligibility: "not_required"`.
-- `completion.status: "unknown"` requires empty completion evidence.
-- A selected, available, incomplete node must have `eligibility: "eligible"` or `"invalid"`.
-- A boundary node may use `eligibility: "not_required"` regardless of incomplete completion because it is never dispatched.
-- A selected complete node must use `eligibility: "not_required"`.
-- Source diagnostics are carried through. Any source error attached to a selected node makes it invalid. Any source error attached to a boundary node makes that boundary unresolved. Global source errors make the plan non-runnable.
+Validation runs in three deterministic phases.
 
-If any structural invariant except a graph cycle fails, graph classification is skipped because the graph is not trustworthy. The outcome is `invalid_input` with no plan or fingerprint.
+**Phase 1 — identity and limits:** schema, concurrency, array limits, non-empty identifiers, positive issue numbers, and duplicate node IDs/numbers. Repository node ID, owner, name, default branch, tip OID, every node ID, title, and URL must be non-empty strings after no trimming or normalization; whitespace-only strings are invalid. Issue numbers and completion PR numbers must be positive safe integers. If Phase 1 has errors, validation returns all Phase 1 errors and warnings and does not inspect selected references or edges, because duplicate identity makes attribution unsafe.
+
+**Phase 2 — node and selection consistency:** selected IDs are unique, exist, and number at most 50. `inputOrder` contains exactly their issue numbers once each. An available node requires non-null `state`, `updatedAt`, and `bodySha256`. An unavailable node requires those fields to be null, `eligibility: "invalid"`, `completion.status: "unknown"`, and empty completion evidence.
+
+Completion evidence is normalized by deduplicating and sorting PR numbers numerically and OIDs by Unicode code-point order. Duplicate evidence emits one `duplicate_completion_evidence` warning per node and kind. Every OID must be a non-empty, non-whitespace string. `complete` requires `state: "CLOSED"`, at least one PR number, at least one OID, and `eligibility: "not_required"`. `unknown` requires empty evidence. A selected available incomplete node requires `eligibility: "eligible"` or `"invalid"`. A boundary available incomplete node may use `eligible`, `invalid`, or `not_required`. A selected complete node requires `not_required`.
+
+A diagnostic in `node.sourceDiagnostics` must have `issueNumber === node.number`; otherwise emit `source_diagnostic_misattached`. A diagnostic in top-level `input.sourceDiagnostics` must have `issueNumber === null`; otherwise emit the same code. Attached errors affect only their owning node; top-level errors are global. If Phase 2 has structural errors, validation returns all Phase 1 warnings plus all Phase 2 errors/warnings and does not inspect edges.
+
+**Phase 3 — edges:** every endpoint exists; self-edges are invalid; at most 100 unique incoming blockers are allowed. Exact duplicates emit one warning and collapse. Same endpoints with different sources emit `duplicate_edge_conflict` and neither edge is chosen. If Phase 3 has errors, validation returns all warnings and Phase 3 errors with no graph.
+
+All diagnostics safe within a phase are aggregated. Later phases never run after an earlier phase error. Warnings discovered before failure remain in the `invalid_input` outcome. Any structural error returns `invalid_input` with no plan or fingerprint. Graph cycles are not structural and are handled below.
 
 ## Output contract
 
@@ -207,6 +205,7 @@ export interface PlannedSelectedIssueV1 {
   level: number | null;
   directBlockerNumbers: number[];
   unresolvedBlockerNumbers: number[];
+  completion: CompletionObservation;
   diagnostics: SourceDiagnostic[];
 }
 
@@ -215,7 +214,7 @@ export interface PlannedBoundaryIssueV1 {
   number: number;
   title: string;
   url: string;
-  completionStatus: CompletionStatus;
+  completion: CompletionObservation;
   diagnostics: SourceDiagnostic[];
 }
 
@@ -252,7 +251,7 @@ export type PlannerOutcome =
   | { kind: "invalid_input"; diagnostics: PlanDiagnostic[] };
 ```
 
-No method throws for contract violations, source errors, or cycles. Programmer errors from unavailable platform primitives such as a missing SHA-256 implementation may throw because they indicate a broken runtime, not invalid planning data.
+`planWaves` never throws for contract violations, source errors, or cycles. Programmer errors from unavailable platform primitives such as a missing SHA-256 implementation may throw because they indicate a broken runtime, not invalid planning data. `canonicalizePlan` has the exact signature `canonicalizePlan(plan: WavePlanV1): string`; it accepts only a plan produced by `planWaves` and throws `TypeError` for prohibited JavaScript values. That throw is a programmer-contract failure, not user/data validation.
 
 ## Graph normalization
 
@@ -266,63 +265,51 @@ After structural validation:
 
 All graph algorithms iterate only these sorted structures. API/input array order cannot influence output other than the preserved `inputOrder` display field.
 
-## Cycle handling
+## Effective completion, cycles, and traversal
 
-Tarjan's strongly connected components algorithm runs over the full graph, including completed and boundary nodes. A component is cyclic when it has more than one node; self-edges were already rejected structurally.
+A node is **effectively complete** only when `completion.status === "complete"` and it has no attached source error. Effective completion is a traversal barrier: all incident edges remain in output for explanation, but graph analysis removes the node and its incident edges. Therefore dependencies of completed work cannot propagate cycles, invalidity, or blocking to downstream work.
 
-For each cyclic component, emit one `dependency_cycle` error. `cycleIssueNumbers` contains unique issue numbers sorted ascending. Cycle diagnostics are sorted by their first issue number, then lexicographically by the entire numeric sequence.
+A complete node with an attached source error is not effectively complete. A selected such node is invalid; a boundary such node is unresolved.
 
-A graph containing any cycle returns `kind: "planned"` with:
+Tarjan's strongly connected components algorithm runs over the remaining active graph. A component is cyclic when it has more than one node; self-edges were already rejected structurally. For each cyclic component, emit one `dependency_cycle` error with unique ascending `cycleIssueNumbers`.
 
-- `runnable: false`;
-- every selected node in or transitively dependent on a cycle classified `invalid`;
-- unaffected selected nodes classified normally;
-- cyclic or cycle-dependent selected nodes omitted from `levels`;
-- a valid fingerprint covering this non-runnable plan.
+A graph containing a cycle remains structurally useful and returns `kind: "planned"`. Selected nodes in a cycle or transitively dependent on one through active blocker edges are invalid. Unaffected components classify normally. Cyclic/cycle-dependent selected nodes have no level. The plan is non-runnable and receives a valid fingerprint.
 
-This differs from structural invalidity because the graph remains well-formed and useful to display.
+Every transitive blocker search walks incoming active edges in ascending blocker-number order and stops at effectively complete nodes. This traversal rule applies identically to cycle dependency, invalid-selected propagation, and unresolved-boundary propagation.
 
-## Classification rules
+## Classification rules and precedence
 
-Classification is performed in ascending selected issue-number order.
+Classification is performed in ascending selected issue-number order with this first-match precedence:
 
-### Terminal complete
+| Priority | Condition | Disposition | Level |
+|---:|---|---|---|
+| 1 | Own availability/eligibility/source error, or belongs to/transitively depends on active cycle | `invalid` | `null` |
+| 2 | Effectively complete | `completed_preexisting` | `null` |
+| 3 | Transitively blocked by invalid selected work through active edges | `blocked_invalid_selected` | `null` |
+| 4 | Transitively blocked by unresolved boundary work through active edges | `blocked_external` | `null` |
+| 5 | No incomplete selected blocker | `ready` | `1` |
+| 6 | Otherwise | `blocked_selected` | `1 + max(blocker levels)` |
 
-A selected node with `completion.status: "complete"` is `completed_preexisting`, has `level: null`, and has no unresolved blockers. Its incoming dependencies remain in output for explanation but do not block dependents.
+An invalid selected node is one whose availability is missing/unreadable, eligibility is invalid, attached source diagnostics contain an error, or active dependency closure reaches a cycle. A boundary node is unresolved when it is not effectively complete; an attached source error is therefore unresolved.
 
-### Invalid selected
+`blocked_invalid_selected` takes precedence when both invalid selected and external blockers exist. `blocked_external` takes precedence over ordinary selected blocking. For level calculation, all remaining blockers are valid selected nodes with defined levels.
 
-A selected node is `invalid` when any applies:
+### Blocker output fields
 
-- availability is missing or unreadable;
-- eligibility is invalid;
-- it has a source error;
-- it belongs to or transitively depends on a cycle.
+For every selected disposition, `directBlockerNumbers` is all direct incoming blocker issue numbers from normalized output edges, including completed blockers, unique and ascending.
 
-Invalid nodes have `level: null`.
+`unresolvedBlockerNumbers` is unique and ascending and follows this exhaustive mapping:
 
-### Blocked by invalid selected
+- `completed_preexisting`: empty;
+- `invalid`: direct blockers that are not effectively complete;
+- `blocked_invalid_selected`: direct blockers from which an invalid selected node or active cycle is reachable without crossing effective completion;
+- `blocked_external`: direct blockers from which an unresolved boundary node is reachable without crossing effective completion;
+- `ready`: empty;
+- `blocked_selected`: direct, incomplete, valid selected blockers.
 
-An otherwise valid selected node is `blocked_invalid_selected` when any transitive selected blocker is invalid. It has `level: null`; `unresolvedBlockerNumbers` contains the direct blockers that lead to invalid selected work, sorted ascending.
+`blocked_selected` always has level 2 or greater. A selected node whose selected blockers are all effectively complete is `ready`.
 
-This rule takes precedence over external and ordinary selected blocking.
-
-### Blocked externally
-
-An otherwise valid selected node is `blocked_external` when any transitive boundary blocker is not complete or has a source error. It has `level: null`; `unresolvedBlockerNumbers` contains direct blockers that lead to unresolved boundary work, sorted ascending.
-
-This rule takes precedence over ordinary selected blocking.
-
-### Ready and blocked selected
-
-For remaining valid, incomplete selected nodes, completed direct blockers are ignored.
-
-- If no incomplete selected blocker remains, disposition is `ready` and level is `1`.
-- Otherwise disposition is `blocked_selected` and level is `1 + max(level of its incomplete selected blockers)`.
-
-Because invalid/cyclic/external cases were removed first, each remaining selected blocker has a level. `unresolvedBlockerNumbers` contains incomplete direct selected blocker numbers.
-
-A node may have `disposition: "blocked_selected"` at level 1 only if all direct selected blockers are completed, which means it is actually `ready`; therefore `blocked_selected` always has level 2 or greater.
+`plan.boundary` always contains **every** non-selected input node exactly once, sorted by issue number then node ID, regardless of whether classification later finds it relevant.
 
 ## Runnable rule
 
@@ -345,7 +332,37 @@ Batches estimate display parallelism only. They do not imply a global runtime ba
 
 ## Diagnostics
 
-Source diagnostics are copied and never rewritten. Core diagnostics use the stable codes in this document.
+`plan.diagnostics` contains, exactly once, every top-level source diagnostic, every node-attached source diagnostic, every core warning, and every cycle diagnostic. `PlannedSelectedIssueV1.diagnostics` and `PlannedBoundaryIssueV1.diagnostics` contain only source diagnostics attached to that node; global and core diagnostics are not copied into nodes. Structural misattachment prevents a plan, so a planned result cannot contain an attached diagnostic for another issue.
+
+Core messages and issue-number attribution are fixed:
+
+| Code | `issueNumber` | Exact message template |
+|---|---|---|
+| `schema_version_unsupported` | null | `Unsupported planner schema version: {value}.` |
+| `selected_limit_exceeded` | null | `Selected issue limit exceeded: {count} > 50.` |
+| `boundary_limit_exceeded` | null | `Boundary issue limit exceeded: {count} > 200.` |
+| `dependency_limit_exceeded` | blocked issue | `Dependency limit exceeded for issue #{n}: {count} > 100.` |
+| `concurrency_out_of_range` | null | `maxConcurrency must be an integer from 1 through 8: {value}.` |
+| `invalid_identifier` | node issue when known, otherwise null | `Invalid non-empty identifier for {field}: {jsonValue}.` |
+| `invalid_issue_number` | null | `Issue number must be a positive safe integer: {jsonValue}.` |
+| `duplicate_node_id` | null | `Duplicate node ID: {jsonString}.` |
+| `duplicate_issue_number` | duplicated number | `Duplicate issue number: #{n}.` |
+| `duplicate_selected_node_id` | selected issue when resolvable, otherwise null | `Duplicate selected node ID: {jsonString}.` |
+| `selected_node_missing` | null | `Selected node ID is missing from nodes: {jsonString}.` |
+| `input_order_mismatch` | null | `inputOrder must contain each selected issue number exactly once.` |
+| `edge_endpoint_missing` | blocked issue when resolvable, otherwise null | `Edge endpoint is missing: {blockerJson} -> {blockedJson}.` |
+| `duplicate_edge_conflict` | blocked issue | `Edge sources conflict for #{blocker} -> #{blocked}.` |
+| `self_dependency` | node issue | `Issue #{n} depends on itself.` |
+| `node_state_inconsistent` | node issue | `Node state fields are inconsistent for issue #{n}.` |
+| `completion_inconsistent` | node issue | `Completion status is inconsistent for issue #{n}.` |
+| `completion_evidence_invalid` | node issue | `Completion evidence is invalid for issue #{n}: {field}.` |
+| `eligibility_inconsistent` | node issue | `Eligibility is inconsistent for issue #{n}.` |
+| `source_diagnostic_misattached` | owning node issue when attached, otherwise null | `Source diagnostic issueNumber is inconsistent with its container.` |
+| `dependency_cycle` | lowest cycle issue | `Dependency cycle: {ascendingNumbersJoinedByArrow}.` |
+| `duplicate_edge` | blocked issue | `Duplicate edge collapsed: #{blocker} -> #{blocked} ({source}).` |
+| `duplicate_completion_evidence` | node issue | `Duplicate completion evidence collapsed for issue #{n}: {field}.` |
+
+`{jsonValue}` and `{jsonString}` use `JSON.stringify`; values that cannot be JSON-stringified render their JavaScript type name. Counts use base-10 integers. These templates live in `diagnostics.ts` and golden tests assert exact output.
 
 Canonical diagnostic ordering:
 
