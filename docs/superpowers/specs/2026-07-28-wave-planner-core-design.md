@@ -162,6 +162,7 @@ export type CoreErrorCode =
   | "completion_evidence_invalid"
   | "eligibility_inconsistent"
   | "source_diagnostic_misattached"
+  | "unreachable_boundary_node"
   | "dependency_cycle";
 ```
 
@@ -179,7 +180,7 @@ Validation runs in four deterministic phases.
 
 **Phase 0 — runtime shape only:** the root, repository, config, every node, every completion object, every source diagnostic, and every edge must be non-null plain objects (`Object.getPrototypeOf(value)` is `Object.prototype` or `null`). Declared collections must be arrays. Required scalar fields must have their primitive type; nullable fields may additionally be null. Enum fields must equal a declared literal. Phase 0 does not check emptiness, numeric integer/range semantics, uniqueness, cross-field consistency, or completion evidence semantics. A malformed value emits `invalid_type` at the deepest safely attributable JSON path. If a container is malformed, descendants are not inspected. If Phase 0 has errors, later phases do not run.
 
-**Phase 1 — scalar values and identity:** check schema value, concurrency integer/range, non-empty strings, positive safe integers, and duplicate node IDs/numbers. The non-empty string rule covers repository identity fields; node IDs/titles/URLs; non-null timestamps/body hashes; edge endpoints; completion OIDs; diagnostic codes/messages; and selected IDs. Diagnostic issue numbers and completion PR numbers must be positive safe integers when non-null/present. Empty/whitespace strings use `invalid_identifier`; numeric values with the right primitive type but invalid integer/range semantics use `invalid_issue_number`, `completion_evidence_invalid`, or `concurrency_out_of_range`. If Phase 1 has errors, later phases do not run because identity may be unsafe.
+**Phase 1 — scalar values and identity:** first check schema value, concurrency integer/range, non-empty strings, and positive safe integers. Then perform duplicate grouping only over scalar-valid values. Invalid/empty node IDs never participate in `duplicate_node_id`; invalid issue numbers never participate in `duplicate_issue_number`. Thus two empty node IDs emit two path-specific `invalid_identifier` diagnostics and no duplicate diagnostic; two issue numbers `0` emit two `invalid_issue_number` diagnostics and no duplicate diagnostic. Valid duplicate groups emit one group diagnostic as defined below. The non-empty string rule covers repository identity fields; node IDs/titles/URLs; non-null timestamps/body hashes; edge endpoints; completion OIDs; diagnostic codes/messages; and selected IDs. Diagnostic issue numbers and completion PR numbers must be positive safe integers when non-null/present. Empty/whitespace strings use `invalid_identifier`; numeric values with the right primitive type but invalid integer/range semantics use `invalid_issue_number`, `completion_evidence_invalid`, or `concurrency_out_of_range`. If Phase 1 has errors, later phases do not run because identity may be unsafe.
 
 **Phase 2 — node and selection consistency:** selected IDs are resolved. Duplicate selected IDs are errors. The selected limit is the number of distinct valid selected ID strings, whether or not each resolves. Boundary count is the number of nodes whose IDs are absent from that distinct selected-ID set. Limits are checked here. Missing selected IDs then emit `selected_node_missing`. `inputOrder` contains exactly the issue numbers of resolved selected nodes once each; when any selected ID is missing, `input_order_mismatch` is not additionally emitted because no issue number exists for comparison.
 
@@ -200,7 +201,9 @@ Cross-field diagnostics have fixed cardinality per node:
 
 A node may receive one diagnostic from each of the first three rows when all three independent relationships fail. Checks run in table order. Phase 1 evidence errors stop before this table. If Phase 2 has errors, edge validation does not run.
 
-**Phase 3 — edges:** every endpoint exists; self-edges are invalid. Dependency count is the number of distinct blocker node IDs for a blocked node after grouping exact duplicates and before discarding source-conflicting groups. At most 100 are allowed. Any group of two or more identical edges emits exactly one `duplicate_edge` warning regardless of multiplicity and collapses to one edge. Same endpoints with different sources emit one `duplicate_edge_conflict`; no edge from that endpoint group is chosen. If Phase 3 has errors, no graph is returned.
+**Phase 3 — edges and closure:** every endpoint exists; self-edges are invalid. Dependency count is the number of distinct blocker node IDs for a blocked node after grouping exact duplicates and before discarding source-conflicting groups. At most 100 are allowed. Any group of two or more identical edges emits exactly one `duplicate_edge` warning regardless of multiplicity and collapses to one edge. Same endpoints with different sources emit one `duplicate_edge_conflict`; no edge from that endpoint group is chosen.
+
+After edge groups are structurally valid, traverse incoming blocker edges from all selected nodes. Every non-selected node must be reached. Each unrelated non-selected node emits `unreachable_boundary_node`; unrelated nodes never proceed to cycle/classification or influence a fingerprint because the result is `invalid_input`. If Phase 3 has errors, no graph is returned.
 
 All core diagnostics safe within a phase are aggregated. Later phases never run after an earlier phase error. Warnings discovered before failure remain in `invalid_input`. Source diagnostics are never included in `invalid_input`; they are observational inputs copied only into a successfully constructed `WavePlanV1`. This applies even when source diagnostics passed Phase 0/2 validation before a Phase 3 structural failure. Any structural error returns `invalid_input` with no plan or fingerprint. Graph cycles are not structural.
 
@@ -315,7 +318,7 @@ Tarjan's strongly connected components algorithm runs over the remaining active 
 
 A graph containing a cycle remains structurally useful and returns `kind: "planned"`. Selected nodes in a cycle or transitively dependent on one through active blocker edges are invalid. Unaffected components classify normally. Cyclic/cycle-dependent selected nodes have no level. The plan is non-runnable and receives a valid fingerprint.
 
-Every transitive blocker search begins by evaluating each direct blocker itself, then walks that blocker's incoming active edges in ascending blocker-number order. It stops at effectively complete nodes. Thus a direct invalid selected blocker, unresolved boundary blocker, or cycle member is reachable without requiring another edge. This rule applies identically to cycle dependency, invalid-selected propagation, and unresolved-boundary propagation.
+Conceptually, every blocker query includes the direct blocker and its incoming active predecessors until effective completion. Implementation must not repeat a DFS per selected issue. It condenses active strongly connected components, then performs one reverse-topological dynamic-programming pass over the condensation DAG, memoizing flags for cycle reachability, invalid-selected reachability, and unresolved-boundary reachability plus the responsible direct blockers. This preserves ascending deterministic output and keeps graph processing `O(V + E)` after sorting.
 
 ## Classification rules and precedence
 
@@ -399,6 +402,7 @@ Core messages and issue-number attribution are fixed:
 | `completion_evidence_invalid` | node issue | `Completion evidence is invalid for issue #{n}: {field}.` |
 | `eligibility_inconsistent` | node issue | `Eligibility is inconsistent for issue #{n}.` |
 | `source_diagnostic_misattached` | owning node issue when attached, otherwise null | `Source diagnostic issueNumber is inconsistent with its container.` |
+| `unreachable_boundary_node` | boundary issue | `Boundary issue #{n} is not reachable from selected work.` |
 | `dependency_cycle` | lowest cycle issue | `Dependency cycle: {hashPrefixedAscendingNumbersJoinedByCommaSpace}.` |
 | `duplicate_edge` | blocked issue | `Duplicate edge collapsed: #{blocker} -> #{blocked} ({source}).` |
 | `duplicate_completion_evidence` | node issue | `Duplicate completion evidence collapsed for issue #{n}: {field}.` |
@@ -443,11 +447,28 @@ Before canonicalization:
 - merge OIDs Unicode code-point ascending;
 - diagnostics sort as defined above.
 
-The fingerprint is lowercase hexadecimal SHA-256 of canonical JSON for the plan with:
+The fingerprint does **not** call public `canonicalizePlan` on an incomplete object. An internal non-exported `canonicalizeFingerprintPayload(payload: FingerprintPayloadV1): string` uses the same generic prohibited-value checks, key sorting, array ordering, and compact JSON encoding, but validates this explicit projected schema:
 
-- `fingerprint` set to the empty string;
-- `inputOrder` excluded;
-- every property named `message` removed recursively from diagnostics in `plan.diagnostics`, `selected[*].diagnostics`, and `boundary[*].diagnostics`; no other `message` property exists in `WavePlanV1`.
+```ts
+type FingerprintSourceDiagnostic = Omit<SourceDiagnostic, "message">;
+type FingerprintPlanDiagnostic = Omit<PlanDiagnostic, "message">;
+type FingerprintSelected = Omit<PlannedSelectedIssueV1, "diagnostics"> & {
+  diagnostics: FingerprintSourceDiagnostic[];
+};
+type FingerprintBoundary = Omit<PlannedBoundaryIssueV1, "diagnostics"> & {
+  diagnostics: FingerprintSourceDiagnostic[];
+};
+type FingerprintPayloadV1 = Omit<
+  WavePlanV1,
+  "fingerprint" | "inputOrder" | "diagnostics" | "selected" | "boundary"
+> & {
+  diagnostics: FingerprintPlanDiagnostic[];
+  selected: FingerprintSelected[];
+  boundary: FingerprintBoundary[];
+};
+```
+
+Before constructing that payload, `message` is removed from diagnostics in `plan.diagnostics`, `selected[*].diagnostics`, and `boundary[*].diagnostics`; no other `message` property exists in `WavePlanV1`. The fingerprint is lowercase hexadecimal SHA-256 of this canonical payload. Public `canonicalizePlan` remains strict about the complete closed `WavePlanV1`.
 
 The returned plan contains that fingerprint. Calling `planWaves` repeatedly with semantically equivalent, differently ordered input must return byte-identical canonical plans except for preserved `inputOrder`; fingerprints must be identical.
 
@@ -497,7 +518,7 @@ The complete output also includes identities, edges, diagnostics, repository dat
 
 ### Contract validation
 
-Cover every invariant and stable diagnostic code, including null/missing roots, malformed nested objects and arrays, every invalid enum/type/string field, multiple simultaneous violations, boundary values (0/1/50/51 selected, 200/201 boundary, 100/101 blockers, concurrency 1/8/9), duplicate groups of 2/3/4 entries, edge warning versus source conflict, missing endpoints, unknown selected completion, malformed diagnostics, and inconsistent completion/eligibility states.
+Cover every invariant and stable diagnostic code, including null/missing roots, malformed nested objects and arrays, every invalid enum/type/string field, duplicate invalid versus duplicate valid identities, multiple simultaneous violations, boundary values (0/1/50/51 selected, 200/201 boundary, 100/101 blockers, concurrency 1/8/9), duplicate groups of 2/3/4 entries, edge warning versus source conflict, missing endpoints, unrelated boundary nodes, unknown selected completion, malformed diagnostics, and inconsistent completion/eligibility states.
 
 ### Graph behavior
 
