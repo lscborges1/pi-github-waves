@@ -114,6 +114,11 @@ export function parseGitHubOrigin(originUrl: string): {
     return validateIdentity(scp[2], scp[3]);
   }
 
+  const httpsAuthority = /^https:\/\/([^/]+)/iu.exec(originUrl)?.[1];
+  if (httpsAuthority?.includes(":") === true) {
+    throw unsupported("repository origin URL is unsupported");
+  }
+
   let url: URL;
   try {
     url = new URL(originUrl);

@@ -33,6 +33,8 @@ describe("parseGitHubOrigin", () => {
     "ssh://alice@github.com/acme/waves.git",
     "ssh://git@github.com:22/acme/waves.git",
     "https://token@github.com/acme/waves.git",
+    "https://github.com:443/acme/waves.git",
+    "https://GITHUB.COM:0443/acme/waves.git",
     "https://github.com/acme/waves.git?ref=main",
     "https://github.com/acme/group/waves.git",
     "https://gitlab.com/acme/waves.git",
