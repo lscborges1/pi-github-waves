@@ -84,6 +84,28 @@ describe("createGitHubReadPort", () => {
     });
   });
 
+  test.each(["created_at", "updated_at"] as const)(
+    "should reject a malformed issue %s timestamp",
+    async (field) => {
+      const issue = {
+        node_id: "issue-node",
+        number: 7,
+        title: "Safe issue",
+        html_url: "https://github.com/acme/waves/issues/7",
+        state: "open",
+        labels: [],
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-02T00:00:00+02:00",
+        body: "",
+        [field]: "not-a-date-time",
+      };
+
+      await expect(
+        port(fixedRunner(jsonResult(issue))).getIssue("acme", "waves", 7),
+      ).rejects.toMatchObject({ code: "invalid_response" });
+    },
+  );
+
   test("should reject an issue response for a different number", async () => {
     const runner = fixedRunner(
       jsonResult({
@@ -204,6 +226,88 @@ describe("createGitHubReadPort", () => {
       endCursor: "cursor-2",
     });
     expect(runner.mock.calls[0]?.[1]).toContain("after=cursor-1");
+  });
+
+  test.each([
+    [
+      "ReopenedEvent",
+      { __typename: "ReopenedEvent", id: "reopen", createdAt: "invalid" },
+    ],
+    [
+      "ClosedEvent",
+      {
+        __typename: "ClosedEvent",
+        id: "close",
+        createdAt: "invalid",
+        closer: null,
+      },
+    ],
+  ] as const)("should reject a malformed %s timestamp", async (_kind, event) => {
+    const response = {
+      data: {
+        repository: {
+          issue: {
+            timelineItems: {
+              nodes: [event],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        },
+      },
+    };
+
+    await expect(
+      port(fixedRunner(jsonResult(response))).getClosureEvents(
+        "acme",
+        "waves",
+        7,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
+  test("should reject a malformed merged timestamp", async () => {
+    const response = {
+      data: {
+        repository: {
+          issue: {
+            timelineItems: {
+              nodes: [
+                {
+                  __typename: "ClosedEvent",
+                  id: "close",
+                  createdAt: "2026-01-03T00:00:00Z",
+                  closer: {
+                    __typename: "PullRequest",
+                    id: "pr-node",
+                    number: 10,
+                    url: "https://github.com/acme/waves/pull/10",
+                    mergedAt: "invalid",
+                    mergeCommit: { oid: "merge-oid" },
+                    baseRefName: "main",
+                    repository: {
+                      id: "repo-node",
+                      name: "waves",
+                      owner: { login: "acme" },
+                    },
+                  },
+                },
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        },
+      },
+    };
+
+    await expect(
+      port(fixedRunner(jsonResult(response))).getClosureEvents(
+        "acme",
+        "waves",
+        7,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_response" });
   });
 
   test("should compare the merge OID as base and default tip as head", async () => {

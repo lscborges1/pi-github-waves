@@ -61,6 +61,7 @@ const repositorySchema = z.object({
   default_branch: z.string().min(1),
 });
 const commitSchema = z.object({ sha: z.string().min(1) });
+const timestampSchema = z.iso.datetime({ offset: true });
 const issueSchema = z.object({
   node_id: z.string().min(1),
   number: z.number().int().positive(),
@@ -68,8 +69,8 @@ const issueSchema = z.object({
   html_url: z.string().url(),
   state: z.enum(["open", "closed"]),
   labels: z.array(z.object({ name: z.string() })),
-  created_at: z.string().min(1),
-  updated_at: z.string().min(1),
+  created_at: timestampSchema,
+  updated_at: timestampSchema,
   body: z.string().nullable(),
   pull_request: z.unknown().optional(),
 });
@@ -87,7 +88,7 @@ const pullRequestCloserSchema = z.object({
   id: z.string().min(1),
   number: z.number().int().positive(),
   url: z.string().url(),
-  mergedAt: z.string().min(1).nullable(),
+  mergedAt: timestampSchema.nullable(),
   mergeCommit: z.object({ oid: z.string().min(1) }).nullable(),
   baseRefName: z.string().min(1),
   repository: z.object({
@@ -108,12 +109,12 @@ const closureResponseSchema = z.object({
                   z.object({
                     __typename: z.literal("ReopenedEvent"),
                     id: z.string().min(1),
-                    createdAt: z.string().min(1),
+                    createdAt: timestampSchema,
                   }),
                   z.object({
                     __typename: z.literal("ClosedEvent"),
                     id: z.string().min(1),
-                    createdAt: z.string().min(1),
+                    createdAt: timestampSchema,
                     closer: z.unknown().nullable(),
                   }),
                 ]),
