@@ -522,6 +522,34 @@ describe("planWaves", () => {
     });
   });
 
+  test("should report a missing boundary blocker as unreadable", async () => {
+    const { ports } = fakePorts({
+      issues: new Map([[1, issue({ number: 1, nodeId: "issue-1" })]]),
+      dependencies: new Map([[1, [dependencySnapshot(2)]]]),
+      issueErrors: new Map([
+        [2, new AdapterError("not_found", "boundary blocker unavailable")],
+      ]),
+    });
+
+    const outcome = await planWaves(input([1]), ports);
+
+    expect(outcome).toMatchObject({
+      kind: "planned",
+      plan: {
+        graph: null,
+        runnable: false,
+        boundary: [{ number: 2, graphNode: null }],
+        diagnostics: [
+          expect.objectContaining({
+            code: "issue_unreadable",
+            issueNumber: 2,
+            details: { resource: "issue" },
+          }),
+        ],
+      },
+    });
+  });
+
   test("should return no partial plan for fatal adapter failures", async () => {
     const { ports } = fakePorts({
       issues: new Map(),

@@ -95,6 +95,15 @@ describe("parseTicket", () => {
     });
   });
 
+  test("should treat a nested HTML comment as section content", () => {
+    const body = VALID_TICKET.replace(
+      "Context text.",
+      "<!-- outer <!-- nested -->",
+    );
+
+    expect(parseTicket(7, body)).toEqual({ kind: "valid" });
+  });
+
   test("should stop section content at an unknown heading with closing hashes", () => {
     const body = VALID_TICKET.replace(
       "Context text.",
@@ -133,6 +142,20 @@ describe("parseTicket", () => {
       kind: "invalid",
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: "missing_section", section: "objective" }),
+      ]),
+    });
+  });
+
+  test("should reject a section heading separated by a tab", () => {
+    const body = VALID_TICKET.replace("## Context", "##\tContext");
+
+    expect(parseTicket(7, body)).toMatchObject({
+      kind: "invalid",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "missing_section",
+          section: "context",
+        }),
       ]),
     });
   });

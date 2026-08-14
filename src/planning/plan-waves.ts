@@ -96,6 +96,7 @@ async function buildPlan(
     const queuedIssue = queue[queueIndex];
     if (queuedIssue === undefined) continue;
     const issueNumber = queuedIssue.number;
+    const issueRole = selectedSet.has(issueNumber) ? "selected" : "boundary";
 
     let snapshot: IssueSnapshot;
     try {
@@ -107,7 +108,14 @@ async function buildPlan(
     } catch (error: unknown) {
       if (!isReportableAdapterError(error)) throw error;
       unavailable.add(issueNumber);
-      diagnostics.push(unavailableDiagnostic(issueNumber, "issue", error));
+      diagnostics.push(
+        unavailableDiagnostic(
+          issueNumber,
+          "issue",
+          issueRole,
+          error,
+        ),
+      );
       completeInput = false;
       continue;
     }
@@ -119,7 +127,14 @@ async function buildPlan(
     } catch (error: unknown) {
       if (!(error instanceof ClosureReadError)) throw error;
       unavailable.add(issueNumber);
-      diagnostics.push(unavailableDiagnostic(issueNumber, "closure", error));
+      diagnostics.push(
+        unavailableDiagnostic(
+          issueNumber,
+          "closure",
+          issueRole,
+          error,
+        ),
+      );
       completeInput = false;
       continue;
     }
@@ -142,7 +157,12 @@ async function buildPlan(
     } catch (error: unknown) {
       if (!isReportableAdapterError(error)) throw error;
       diagnostics.push(
-        unavailableDiagnostic(issueNumber, "dependencies", error),
+        unavailableDiagnostic(
+          issueNumber,
+          "dependencies",
+          issueRole,
+          error,
+        ),
       );
       completeInput = false;
       continue;
@@ -672,6 +692,7 @@ function isReportableAdapterError(
 function unavailableDiagnostic(
   issueNumber: number,
   resource: "issue" | "dependencies" | "closure",
+  role: "selected" | "boundary",
   error: AdapterError & {
     readonly code: "not_found" | "forbidden" | "gone";
   },
@@ -679,7 +700,9 @@ function unavailableDiagnostic(
   return {
     severity: "error",
     code:
-      resource === "issue" && error.code === "not_found"
+      role === "selected" &&
+      resource === "issue" &&
+      error.code === "not_found"
         ? "issue_missing"
         : "issue_unreadable",
     issueNumber,

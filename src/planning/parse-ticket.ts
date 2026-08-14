@@ -7,9 +7,9 @@ import type {
 import { asciiLowercase } from "./text.js";
 
 const MAX_ISSUE_BODY_BYTES = 128 * 1024;
-const ATX_LEVEL_TWO = /^ {0,3}##[\t ]+(.*)$/u;
+const ATX_LEVEL_TWO = /^ {0,3}## +(.*)$/u;
 const CLOSING_HASHES = /[\t ]+#+[\t ]*$/u;
-const COMPLETE_HTML_COMMENT = /^<!--[\s\S]*-->$/u;
+const COMPLETE_HTML_COMMENT = /^<!--(?:(?!<!--|-->)[\s\S])*-->$/u;
 
 const SECTION_ORDER = [
   "context",

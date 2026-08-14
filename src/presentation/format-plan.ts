@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type {
   CommandOutcome,
   CompletionEvidence,
@@ -16,12 +18,16 @@ export interface RenderLimits {
   readonly maximumLines: number;
 }
 
-export interface RenderedPlan {
-  readonly schemaVersion: 1;
-  readonly kind: CommandOutcome["kind"];
-  readonly text: string;
-  readonly truncated: boolean;
-}
+export const renderedPlanSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    kind: z.enum(["planned", "fatal", "cancelled"]),
+    text: z.string(),
+    truncated: z.boolean(),
+  })
+  .strict();
+
+export type RenderedPlan = Readonly<z.infer<typeof renderedPlanSchema>>;
 
 export function formatPlanOutcome(
   outcome: CommandOutcome,

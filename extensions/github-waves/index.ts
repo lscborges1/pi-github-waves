@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { z } from "zod";
 
 import { createRepositoryPort } from "../../src/adapters/git-repository.js";
 import { createGitHubReadPort } from "../../src/adapters/github-cli.js";
@@ -13,19 +12,12 @@ import { parsePlanCommand } from "../../src/planning/parse-command.js";
 import { planWaves } from "../../src/planning/plan-waves.js";
 import {
   formatPlanOutcome,
+  renderedPlanSchema,
   type RenderedPlan,
 } from "../../src/presentation/format-plan.js";
 
 const ENTRY_TYPE = "waves-plan";
 const STATUS_KEY = "github-waves";
-const entrySchema = z
-  .object({
-    schemaVersion: z.literal(1),
-    kind: z.enum(["planned", "fatal", "cancelled"]),
-    text: z.string(),
-    truncated: z.boolean(),
-  })
-  .strict();
 
 export type WavesPlanEntry = RenderedPlan;
 export type GitHubWavesExtensionApi = Pick<
@@ -72,7 +64,7 @@ export default function registerGitHubWaves(
   pi.registerEntryRenderer<WavesPlanEntry>(
     ENTRY_TYPE,
     (entry, _options, theme) => {
-      const parsed = entrySchema.safeParse(entry.data);
+      const parsed = renderedPlanSchema.safeParse(entry.data);
       const text = parsed.success
         ? parsed.data.text
         : "Invalid waves-plan session entry.";
