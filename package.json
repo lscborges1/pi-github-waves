@@ -4,9 +4,25 @@
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "files": [
-    "dist"
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "pi-package"
   ],
+  "files": [
+    "dist",
+    "extensions",
+    "skills"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
   "exports": {
     "./graph": {
       "types": "./dist/graph/index.d.ts",
@@ -20,9 +36,19 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@earendil-works/pi-tui": "0.84.2",
     "@types/node": "^22.15.0",
     "fast-check": "^4.3.0",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "mdast-util-from-markdown": "^2.0.3",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   }
 }
