@@ -76,7 +76,7 @@ export function parseTicket(
   }
 
   const root = fromMarkdown(body);
-  const lines = body.split(/\r?\n/u);
+  const lines = body.split(/\r\n?|\n/u);
   const boundaries = new Set<number>();
   const occurrences = new Map<TicketSection, SectionOccurrence[]>();
 

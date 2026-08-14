@@ -37,6 +37,64 @@ describe("formatPlanOutcome", () => {
     expect(rendered.text).not.toContain("\u001b");
   });
 
+  test("should distinguish unresolved and unavailable boundary completion", () => {
+    const unresolvedGraphNode = {
+      id: "issue-2",
+      issueNumber: 2,
+      status: "unresolved" as const,
+      relevant: true,
+    };
+    const unresolvedPlan = plan();
+    const unresolvedGraph = unresolvedPlan.graph;
+    if (unresolvedGraph === null) throw new Error("Expected graph fixture");
+    const unresolved = formatPlanOutcome({
+      kind: "planned",
+      plan: {
+        ...unresolvedPlan,
+        boundary: [
+          {
+            number: 2,
+            nodeId: "issue-2",
+            title: "Closed blocker",
+            url: null,
+            state: "CLOSED",
+            updatedAt: "2026-01-01T00:00:00Z",
+            completion: { completed: false, pullRequests: [] },
+            graphNode: unresolvedGraphNode,
+          },
+        ],
+        graph: {
+          ...unresolvedGraph,
+          boundary: [unresolvedGraphNode],
+        },
+      },
+    });
+    const unavailable = formatPlanOutcome({
+      kind: "planned",
+      plan: plan({
+        boundary: [
+          {
+            number: 3,
+            nodeId: "issue-3",
+            title: "Unknown blocker",
+            url: null,
+            state: "CLOSED",
+            updatedAt: "2026-01-01T00:00:00Z",
+            completion: { completed: false, pullRequests: [] },
+            graphNode: null,
+          },
+        ],
+        graph: null,
+        runnable: false,
+      }),
+    });
+
+    expect([unresolved.text, unavailable.text].flatMap(boundaryLines)).toEqual([
+      "- #2 [unresolved] Closed blocker",
+      "- #3 [unavailable] Unknown blocker",
+    ]);
+  });
+
   test("should cap output by UTF-8 bytes and lines with an omission notice", () => {
     const oversizedPlan = plan({
       selected: Array.from({ length: 2_100 }, (_, index) => ({
@@ -141,4 +199,8 @@ function plan(overrides: Partial<PlanResultV1> = {}): PlanResultV1 {
     runnable: true,
     ...overrides,
   };
+}
+
+function boundaryLines(text: string): readonly string[] {
+  return text.split("\n").filter((line) => /^- #[23] /u.test(line));
 }

@@ -13,6 +13,25 @@ import registerGitHubWaves, {
   type WavesPlanEntry,
 } from "../../extensions/github-waves/index.js";
 import type { CommandOutcome } from "../../src/planning/contracts.js";
+import { planWaves } from "../../src/planning/plan-waves.js";
+
+const VALID_BODY = `## Context
+Context.
+## Objective
+Objective.
+## Scope
+Scope.
+## Out of scope
+Out.
+## Expected behavior
+Behavior.
+## Technical notes
+Notes.
+## Acceptance criteria
+- Accepted.
+## Test scenarios
+- Tested.
+`;
 
 describe("github-waves extension", () => {
   test("should register the waves command and durable entry renderer", () => {
@@ -153,6 +172,74 @@ describe("github-waves extension", () => {
     expect(context.setStatus).toHaveBeenLastCalledWith(
       "github-waves",
       undefined,
+    );
+  });
+
+  test("should report sanitized graph invariant failures", async () => {
+    const reportUnexpectedError = vi.fn();
+    const harness = extensionHarness();
+    registerGitHubWaves(
+      harness.api,
+      dependencies({
+        plan: planWaves,
+        createRepository: () => ({
+          discover: async () => ({
+            worktreeRoot: "/worktree",
+            commonDir: "/repo/.git",
+            originUrl: "git@github.com:acme/waves.git",
+            owner: "acme",
+            name: "waves",
+          }),
+        }),
+        createGitHub: () => ({
+          authenticate: async () => undefined,
+          getRepository: async () => ({
+            nodeId: "repository-node",
+            owner: "acme",
+            name: "waves",
+            url: "https://github.com/acme/waves",
+            defaultBranch: "main",
+            defaultBranchTipOid: "tip-oid",
+          }),
+          getIssue: async (_owner, _name, number) => ({
+            nodeId: "duplicate-node",
+            number,
+            title: `Issue ${number}`,
+            url: `https://github.com/acme/waves/issues/${number}`,
+            state: "OPEN",
+            labels: ["agent: suitable"],
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            body: VALID_BODY,
+          }),
+          getBlockedBy: async (_owner, _name, _number, page) => ({
+            dependencies: [],
+            page,
+            hasNextPage: false,
+          }),
+          getClosureEvents: async () => ({
+            events: [],
+            hasNextPage: false,
+            endCursor: null,
+          }),
+          compareCommits: async () => ({ status: "identical" }),
+        }),
+        reportUnexpectedError,
+      }),
+    );
+    const context = commandContext({ trusted: true });
+
+    await harness.command("waves").handler("plan #1 #2", context.value);
+
+    expect(reportUnexpectedError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "PlanningInvariantError",
+        graphErrors: [
+          { code: "duplicate_node_id", issueNumber: null },
+          { code: "duplicate_selected_id", issueNumber: null },
+        ],
+      }),
+      { operation: "waves_plan", selectedIssueCount: 2 },
     );
   });
 });

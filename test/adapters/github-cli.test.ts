@@ -245,14 +245,95 @@ describe("createGitHubReadPort", () => {
     });
   });
 
-  test("should use only read endpoints and an explicit GraphQL query", async () => {
-    const runner = fixedRunner(jsonResult({ status: "ahead" }));
+  test("should restrict every GitHub operation to read-only API requests", async () => {
+    const runner = sequenceRunner([
+      { exitCode: 0, stdout: "", stderr: "" },
+      jsonResult({
+        node_id: "repo-node",
+        owner: { login: "acme" },
+        name: "waves",
+        html_url: "https://github.com/acme/waves",
+        default_branch: "main",
+      }),
+      jsonResult({ sha: "tip-oid" }),
+      jsonResult({
+        node_id: "issue-node",
+        number: 7,
+        title: "Safe issue",
+        html_url: "https://github.com/acme/waves/issues/7",
+        state: "open",
+        labels: [],
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+        body: "",
+      }),
+      jsonResult([]),
+      jsonResult({
+        data: {
+          repository: {
+            issue: {
+              timelineItems: {
+                nodes: [],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        },
+      }),
+      jsonResult({ status: "ahead" }),
+    ]);
+    const github = port(runner);
 
-    await port(runner).compareCommits("owner", "repo", "base", "head");
+    await github.authenticate();
+    await github.getRepository("acme", "waves");
+    await github.getIssue("acme", "waves", 7);
+    await github.getBlockedBy("acme", "waves", 7, 1);
+    await github.getClosureEvents("acme", "waves", 7, null);
+    await github.compareCommits("acme", "waves", "base", "head");
 
-    const argv = runner.mock.calls[0]?.[1] ?? [];
-    expect(argv).toContain("GET");
-    expect(argv.join(" ")).not.toMatch(/delete|patch|mutation/iu);
+    expect(
+      runner.mock.calls
+        .map((call) => call[1])
+        .filter((args) => args[0] === "api")
+        .map((args) =>
+          args[1] === "graphql"
+            ? {
+                kind: "graphql",
+                operation: args
+                  .find((argument) => argument.startsWith("query="))
+                  ?.slice(0, 11),
+              }
+            : {
+                kind: "rest",
+                method: args[args.indexOf("--method") + 1],
+                endpoint: args.at(-1),
+              },
+        ),
+    ).toEqual([
+      { kind: "rest", method: "GET", endpoint: "/repos/acme/waves" },
+      {
+        kind: "rest",
+        method: "GET",
+        endpoint: "/repos/acme/waves/commits/main",
+      },
+      {
+        kind: "rest",
+        method: "GET",
+        endpoint: "/repos/acme/waves/issues/7",
+      },
+      {
+        kind: "rest",
+        method: "GET",
+        endpoint:
+          "/repos/acme/waves/issues/7/dependencies/blocked_by?per_page=100&page=1",
+      },
+      { kind: "graphql", operation: "query=query" },
+      {
+        kind: "rest",
+        method: "GET",
+        endpoint: "/repos/acme/waves/compare/base...head",
+      },
+    ]);
   });
 
   test("should invoke a fake gh executable with safe argv", async () => {

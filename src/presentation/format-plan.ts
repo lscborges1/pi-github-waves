@@ -80,12 +80,9 @@ function plannedLines(plan: PlanResultV1): readonly string[] {
   lines.push("", "Boundary issues:");
   if (plan.boundary.length === 0) lines.push("- none");
   for (const issue of plan.boundary) {
-    const state =
-      issue.nodeId === null
-        ? "unavailable"
-        : issue.completion.completed
-          ? "complete"
-          : "open";
+    const state = issue.completion.completed
+      ? "complete"
+      : (issue.graphNode?.status ?? "unavailable");
     lines.push(
       `- #${issue.number} [${state}] ${inline(issue.title ?? "unavailable")}${
         issue.url === null ? "" : ` (${inline(issue.url)})`

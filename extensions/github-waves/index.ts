@@ -9,7 +9,10 @@ import type {
   RepositoryPort,
 } from "../../src/planning/contracts.js";
 import { parsePlanCommand } from "../../src/planning/parse-command.js";
-import { planWaves } from "../../src/planning/plan-waves.js";
+import {
+  PlanningInvariantError,
+  planWaves,
+} from "../../src/planning/plan-waves.js";
 import {
   formatPlanOutcome,
   renderedPlanSchema,
@@ -52,6 +55,9 @@ const DEFAULT_DEPENDENCIES: GitHubWavesDependencies = {
         event: "github_waves_unexpected_error",
         ...context,
         errorName: error instanceof Error ? error.name : "UnknownThrownValue",
+        ...(error instanceof PlanningInvariantError
+          ? { graphErrors: error.graphErrors }
+          : {}),
       })}\n`,
     );
   },

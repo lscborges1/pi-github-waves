@@ -4,6 +4,7 @@ import {
   buildDependencyWaveGraph,
   type DependencyEdge,
   type DependencyNode,
+  type GraphError,
 } from "../graph/index.js";
 import { compareOpaqueId } from "../graph/compare.js";
 import type {
@@ -29,6 +30,21 @@ import { asciiLowercase } from "./text.js";
 
 const MAX_CLOSURE_EVENTS = 1_000;
 const MAX_CONCURRENCY = 3 as const;
+
+export class PlanningInvariantError extends Error {
+  readonly graphErrors: readonly Readonly<
+    Pick<GraphError, "code" | "issueNumber">
+  >[];
+
+  constructor(errors: readonly GraphError[]) {
+    super("planning graph input was invalid");
+    this.name = "PlanningInvariantError";
+    this.graphErrors = errors.map(({ code, issueNumber }) => ({
+      code,
+      issueNumber,
+    }));
+  }
+}
 
 interface LoadedIssue {
   readonly snapshot: IssueSnapshot;
@@ -473,7 +489,7 @@ function assemblePlan(options: {
       edges: graphEdges,
     });
     if (outcome.kind === "invalid_input") {
-      return fatal("invalid_response", "planning graph input was invalid");
+      throw new PlanningInvariantError(outcome.errors);
     }
     graph = outcome.graph;
     for (const cycle of graph.cycles) {

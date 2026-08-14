@@ -45,6 +45,12 @@ describe("parseTicket", () => {
     expect(parseTicket(7, body)).toEqual({ kind: "valid" });
   });
 
+  test("should accept CommonMark carriage-return line endings", () => {
+    const body = VALID_TICKET.replaceAll("\n", "\r");
+
+    expect(parseTicket(7, body)).toEqual({ kind: "valid" });
+  });
+
   test("should report a missing section when only a Setext heading exists", () => {
     const body = VALID_TICKET.replace("## Context", "Context\n-------");
 
