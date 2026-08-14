@@ -66,7 +66,7 @@ describe("createGitHubReadPort", () => {
         state: "open",
         labels: [{ name: "agent: suitable" }],
         created_at: "2026-01-01T00:00:00Z",
-        updated_at: "2026-01-02T00:00:00Z",
+        updated_at: "2026-01-02T00:00:00+02:00",
         body: null,
       }),
     );
@@ -79,7 +79,7 @@ describe("createGitHubReadPort", () => {
       state: "OPEN",
       labels: ["agent: suitable"],
       createdAt: "2026-01-01T00:00:00Z",
-      updatedAt: "2026-01-02T00:00:00Z",
+      updatedAt: "2026-01-02T00:00:00+02:00",
       body: "",
     });
   });
