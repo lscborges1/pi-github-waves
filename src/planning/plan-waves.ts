@@ -334,6 +334,7 @@ async function loadCompletion(
 
   const events: ClosureEventSnapshot[] = [];
   let cursor: string | null = null;
+  const seenCursors = new Set<string>();
   for (;;) {
     let page: ClosureEventPage;
     try {
@@ -361,13 +362,21 @@ async function loadCompletion(
         "closure event limit exceeded",
       );
     }
-    if (page.endCursor === null) {
+    if (page.events.length === 0) {
       throw new AdapterError(
         "invalid_response",
-        "closure pagination cursor is missing",
+        "closure pagination did not advance",
       );
     }
-    cursor = page.endCursor;
+    const nextCursor = page.endCursor;
+    if (nextCursor === null || seenCursors.has(nextCursor)) {
+      throw new AdapterError(
+        "invalid_response",
+        "closure pagination did not advance",
+      );
+    }
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
   }
 
   let epochStart = 0;

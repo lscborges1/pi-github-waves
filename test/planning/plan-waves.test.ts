@@ -633,6 +633,51 @@ describe("planWaves", () => {
     });
   });
 
+  test("should reject a repeated closure pagination cursor", async () => {
+    const events = Array.from({ length: 100 }, (_, index) => ({
+      kind: "reopened" as const,
+      nodeId: `reopen-${index}`,
+      createdAt: "2026-01-02T00:00:00Z",
+    }));
+    const { ports, getClosureEvents } = fakePorts({
+      issues: new Map([
+        [1, issue({ number: 1, nodeId: "issue-1", state: "CLOSED" })],
+      ]),
+      closurePage: () => ({
+        events,
+        hasNextPage: true,
+        endCursor: "same-cursor",
+      }),
+    });
+
+    await expect(planWaves(input([1]), ports)).resolves.toMatchObject({
+      kind: "fatal",
+      code: "invalid_response",
+    });
+    expect(getClosureEvents).toHaveBeenCalledTimes(2);
+  });
+
+  test("should reject an empty continuing closure page", async () => {
+    let page = 0;
+    const { ports, getClosureEvents } = fakePorts({
+      issues: new Map([
+        [1, issue({ number: 1, nodeId: "issue-1", state: "CLOSED" })],
+      ]),
+      closurePage: () => {
+        page += 1;
+        return page === 1
+          ? { events: [], hasNextPage: true, endCursor: "fresh-cursor" }
+          : { events: [], hasNextPage: false, endCursor: null };
+      },
+    });
+
+    await expect(planWaves(input([1]), ports)).resolves.toMatchObject({
+      kind: "fatal",
+      code: "invalid_response",
+    });
+    expect(getClosureEvents).toHaveBeenCalledTimes(1);
+  });
+
   test("should emit a cycle diagnostic for selected dependency cycles", async () => {
     const dependency = (number: number) => ({
       repositoryUrl: "https://api.github.com/repos/acme/waves",
@@ -838,6 +883,17 @@ function fakePorts(options: {
     if (snapshot === undefined) throw new Error(`Missing fixture #${number}`);
     return snapshot;
   });
+  const getClosureEvents = vi.fn(async (_owner, _name, number, cursor) => {
+    const error = options.closureErrors?.get(number);
+    if (error !== undefined) throw error;
+    return (
+      options.closurePage?.(number, cursor) ?? {
+        events: options.closures?.get(number) ?? [],
+        hasNextPage: false,
+        endCursor: null,
+      }
+    );
+  });
   const github: GitHubReadPort = {
     authenticate: vi.fn(async () => {
       if (options.authenticationError !== undefined) {
@@ -847,17 +903,7 @@ function fakePorts(options: {
     getRepository: vi.fn(async () => REMOTE_REPOSITORY),
     getIssue,
     getBlockedBy,
-    getClosureEvents: vi.fn(async (_owner, _name, number, cursor) => {
-      const error = options.closureErrors?.get(number);
-      if (error !== undefined) throw error;
-      return (
-        options.closurePage?.(number, cursor) ?? {
-          events: options.closures?.get(number) ?? [],
-          hasNextPage: false,
-          endCursor: null,
-        }
-      );
-    }),
+    getClosureEvents,
     compareCommits: vi.fn(async (_owner, _name, baseOid) => {
       const error = options.comparisonErrors?.get(baseOid);
       if (error !== undefined) throw error;
@@ -869,6 +915,7 @@ function fakePorts(options: {
     ports: { repository, github },
     getBlockedBy,
     getIssue,
+    getClosureEvents,
     compareCommits: github.compareCommits,
   };
 }
