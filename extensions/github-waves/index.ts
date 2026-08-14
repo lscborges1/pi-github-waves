@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 
@@ -21,12 +23,67 @@ import {
 
 const ENTRY_TYPE = "waves-plan";
 const STATUS_KEY = "github-waves";
+const SAFE_ERROR_NAME = /^[A-Za-z][A-Za-z0-9]{0,63}$/u;
+const STACK_FRAME_LOCATION = /([A-Za-z0-9._-]+:\d+:\d+)\)?$/u;
+const MAX_SIGNATURE_FRAMES = 5;
 
 export type WavesPlanEntry = RenderedPlan;
 export type GitHubWavesExtensionApi = Pick<
   ExtensionAPI,
   "registerCommand" | "registerEntryRenderer" | "appendEntry"
 >;
+
+export function createUnexpectedErrorSignature(error: unknown): string {
+  const errorName =
+    error instanceof Error && SAFE_ERROR_NAME.test(error.name)
+      ? error.name
+      : "UnknownError";
+  const frames =
+    error instanceof Error && typeof error.stack === "string"
+      ? error.stack
+          .split(/\r?\n/u)
+          .slice(1)
+          .flatMap((line) => {
+            const location = STACK_FRAME_LOCATION.exec(line.trim())?.[1];
+            return location === undefined ? [] : [location];
+          })
+          .slice(0, MAX_SIGNATURE_FRAMES)
+      : [];
+  const canonical = [
+    errorName,
+    ...(frames.length === 0 ? ["no-stack"] : frames),
+  ].join("|");
+
+  return createHash("sha256")
+    .update(canonical, "utf8")
+    .digest("hex")
+    .slice(0, 16);
+}
+
+export interface UnexpectedErrorContext {
+  readonly operation: "waves_plan";
+  readonly selectedIssueCount: number;
+  readonly errorSignature: string;
+}
+
+export function reportUnexpectedErrorToStderr(
+  error: unknown,
+  context: UnexpectedErrorContext,
+): void {
+  process.stderr.write(
+    `${JSON.stringify({
+      event: "github_waves_unexpected_error",
+      ...context,
+      errorName:
+        error instanceof Error && SAFE_ERROR_NAME.test(error.name)
+          ? error.name
+          : "UnknownError",
+      ...(error instanceof PlanningInvariantError
+        ? { graphErrors: error.graphErrors }
+        : {}),
+    })}\n`,
+  );
+}
 
 export interface GitHubWavesDependencies {
   readonly createRepository: (
@@ -36,32 +93,18 @@ export interface GitHubWavesDependencies {
   readonly plan: typeof planWaves;
   readonly reportUnexpectedError: (
     error: unknown,
-    context: {
-      readonly operation: "waves_plan";
-      readonly selectedIssueCount: number;
-    },
+    context: UnexpectedErrorContext,
   ) => void;
 }
 
-const DEFAULT_DEPENDENCIES: GitHubWavesDependencies = {
+const DEFAULT_DEPENDENCIES = {
   createRepository: (signal) =>
     createRepositoryPort(signal === undefined ? {} : { signal }),
   createGitHub: (signal) =>
     createGitHubReadPort(signal === undefined ? {} : { signal }),
   plan: planWaves,
-  reportUnexpectedError: (error, context) => {
-    process.stderr.write(
-      `${JSON.stringify({
-        event: "github_waves_unexpected_error",
-        ...context,
-        errorName: error instanceof Error ? error.name : "UnknownThrownValue",
-        ...(error instanceof PlanningInvariantError
-          ? { graphErrors: error.graphErrors }
-          : {}),
-      })}\n`,
-    );
-  },
-};
+  reportUnexpectedError: reportUnexpectedErrorToStderr,
+} satisfies GitHubWavesDependencies;
 
 export default function registerGitHubWaves(
   pi: GitHubWavesExtensionApi,
@@ -121,6 +164,7 @@ export default function registerGitHubWaves(
           dependencies.reportUnexpectedError(error, {
             operation: "waves_plan",
             selectedIssueCount: parsed.selectedNumbers.length,
+            errorSignature: createUnexpectedErrorSignature(error),
           });
           outcome = {
             kind: "fatal",

@@ -8,6 +8,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import registerGitHubWaves, {
+  createUnexpectedErrorSignature,
+  reportUnexpectedErrorToStderr,
   type GitHubWavesDependencies,
   type GitHubWavesExtensionApi,
   type WavesPlanEntry,
@@ -32,6 +34,57 @@ Notes.
 ## Test scenarios
 - Tested.
 `;
+
+test("should create a stable redacted unexpected-error signature", () => {
+  const first = new Error("first secret");
+  first.stack = [
+    "Error: first secret",
+    "    at plan (/Users/alice/private/index.js:42:7)",
+    "    at run (/Users/alice/private/runner.js:9:2)",
+  ].join("\n");
+  const second = new Error("second secret");
+  second.stack = [
+    "Error: second secret",
+    "    at plan (/srv/build/index.js:42:7)",
+    "    at run (/srv/build/runner.js:9:2)",
+  ].join("\n");
+
+  expect(createUnexpectedErrorSignature(first)).toBe("6195152eb6f821be");
+  expect(createUnexpectedErrorSignature(second)).toBe("6195152eb6f821be");
+});
+
+test("should use a stable fallback when an unexpected value has no stack", () => {
+  expect(createUnexpectedErrorSignature("secret thrown value")).toBe(
+    createUnexpectedErrorSignature({ secret: "different" }),
+  );
+  expect(createUnexpectedErrorSignature("secret thrown value")).toMatch(
+    /^[a-f0-9]{16}$/u,
+  );
+});
+
+test("should write only safe unexpected-error metadata to stderr", () => {
+  const error = new Error("secret adapter detail");
+  error.stack = [
+    "Error: secret adapter detail",
+    "    at plan (/Users/alice/private/index.js:42:7)",
+  ].join("\n");
+  const write = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+
+  try {
+    reportUnexpectedErrorToStderr(error, {
+      operation: "waves_plan",
+      selectedIssueCount: 1,
+      errorSignature: createUnexpectedErrorSignature(error),
+    });
+
+    const output = String(write.mock.calls[0]?.[0]);
+    expect(output).toContain('"errorSignature":"672c78c41d329a14"');
+    expect(output).not.toContain("secret adapter detail");
+    expect(output).not.toContain("/Users/alice/private");
+  } finally {
+    write.mockRestore();
+  }
+});
 
 describe("github-waves extension", () => {
   test("should register the waves command and durable entry renderer", () => {
@@ -168,6 +221,7 @@ describe("github-waves extension", () => {
     expect(reportUnexpectedError).toHaveBeenCalledWith(unexpectedError, {
       operation: "waves_plan",
       selectedIssueCount: 1,
+      errorSignature: expect.stringMatching(/^[a-f0-9]{16}$/u),
     });
     expect(context.setStatus).toHaveBeenLastCalledWith(
       "github-waves",
@@ -239,7 +293,11 @@ describe("github-waves extension", () => {
           { code: "duplicate_selected_id", issueNumber: null },
         ],
       }),
-      { operation: "waves_plan", selectedIssueCount: 2 },
+      {
+        operation: "waves_plan",
+        selectedIssueCount: 2,
+        errorSignature: expect.stringMatching(/^[a-f0-9]{16}$/u),
+      },
     );
   });
 });
