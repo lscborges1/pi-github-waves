@@ -4,10 +4,10 @@
   <img src="docs/assets/banner.svg" width="100%" alt="Dependency wave graph: issues grouped into waves, where ready issues flow downstream to blocked issues">
 </p>
 
-Dependency-driven GitHub Issue orchestration for [pi](https://github.com/badlogic/pi-mono): validate explicit work, calculate safe parallelism, run isolated agents, and release downstream work only when its own blockers are merged.
+Dependency-driven GitHub Issue planning for [pi](https://github.com/earendil-works/pi): validate explicit work, calculate safe parallelism, and preview the result before any execution system exists.
 
 > [!IMPORTANT]
-> **Project status: early development.** The pure dependency-wave graph planner is implemented and tested. GitHub adapters, pi commands, durable runs, worktrees, workers, PR monitoring, and repair orchestration are planned but are **not available yet**.
+> **Project status: early development.** The pure graph core and the read-only `/waves plan` vertical slice are implemented and tested. Durable runs, worktrees, workers, PR monitoring, repair orchestration, web UI, and macOS code are **not available yet**.
 
 ## Why this exists
 
@@ -19,7 +19,7 @@ If issues `#1` and `#2` have no blockers, both can run concurrently. If `#3` dep
 
 1. **GitHub Issues are the source of truth.**
 2. **Dependencies are explicit.** The system never guesses edges from titles or prose.
-3. **Planning is deterministic and read-only.** It never writes to GitHub or changes working-tree content. A disclosed, confirmed `git fetch` may update local remote-tracking metadata when merge verification is implemented.
+3. **Planning is deterministic and read-only.** It never writes to GitHub, fetches refs, or changes the working tree. Merge verification uses GitHub's read-only commit-comparison API.
 4. **Workers are isolated.** Each dispatched issue gets its own branch, worktree, agent, and reviewable PR.
 5. **Merge stays human.** Automation may implement, monitor, and perform bounded repairs, but it never merges.
 
@@ -38,8 +38,10 @@ Gabriel described an orchestrator that reads explicit ticket relationships, buil
 | Pure dependency-graph validation and planning | **Available** |
 | Completion barriers and relevant-cycle detection | **Available** |
 | Deterministic dispositions, levels, and batches | **Available** |
-| GitHub Issue loading and ticket parsing | Planned |
-| `/waves plan`, dry run, and approval | Planned |
+| GitHub Issue loading and strict ticket parsing | **Available** |
+| Native dependency traversal and verified completion | **Available** |
+| `/waves plan` textual TUI report | **Available** |
+| Plan approval and execution | Planned |
 | Worktree and local pi worker dispatch | Planned |
 | Persistent runs and explicit resume | Planned |
 | PR, CI, and review reconciliation | Planned |
@@ -107,6 +109,56 @@ A display plan might show:
 
 At runtime, `#3` may start as soon as `#1` is merged; it does not wait for `#2` or `#6`. Likewise, a slow `#4` does not block unrelated work. Only `#5` waits for both of its own blockers.
 
+## Available today: `/waves plan`
+
+The bundled pi extension connects the graph core to a trusted GitHub.com worktree through read-only `git` and `gh` subprocesses. It accepts 1–50 unique Issue numbers, recursively loads up to 200 same-repository boundary blockers from GitHub's native dependency API, verifies completed blockers, and appends one durable textual session entry.
+
+### Requirements and local use
+
+- Node.js 22.19 or newer;
+- pnpm;
+- pi 0.84.x;
+- GitHub CLI authenticated for `github.com`;
+- a trusted worktree with exactly one supported GitHub.com `origin` fetch URL.
+
+```bash
+git clone https://github.com/lscborges1/pi-github-waves.git
+cd pi-github-waves
+pnpm install --frozen-lockfile
+pnpm build
+gh auth status --hostname github.com
+pi -e .
+```
+
+`pi -e .` loads the package for the current invocation without installing it persistently. From the pi TUI, run:
+
+```text
+/waves plan #3 #4 #6
+```
+
+The report shows repository identity and default tip, selected and boundary Issues, completion evidence, native edges, dispositions, relevant cycles, levels/batches, and ordered diagnostics. It is capped at 50 KiB and 2,000 lines and always ends with `No execution occurred.`
+
+### Ticket and dependency contract
+
+Every open selected Issue must carry `agent: suitable`, must not carry `agent: not suitable` or `agent: review required`, and must contain exactly one accepted English or Portuguese level-two heading for each section:
+
+| English | Portuguese |
+|---|---|
+| Context | Contexto |
+| Objective | Objetivo |
+| Scope | Escopo |
+| Out of scope | Fora de escopo |
+| Expected behavior | Comportamento esperado |
+| Technical notes | Detalhes técnicos |
+| Acceptance criteria | Critérios de aceite |
+| Test scenarios | Cenários de teste |
+
+Acceptance criteria and test scenarios require Markdown list items. Bodies are limited to 128 KiB. Add blocker edges with GitHub's native **Dependencies → Blocked by** relationship; prose declarations are never interpreted as graph edges.
+
+A closed Issue counts as complete only when its current closure epoch contains a merged PR targeting the repository's current default branch and that PR's merge OID is identical to or ancestral to the current default tip. Verified completion is a traversal barrier.
+
+Planning performs no fetch, configuration lookup, fingerprinting, persistence, approval, dispatch, GitHub mutation, ref mutation, or temporary-file output.
+
 ## Available today: the dependency-wave graph
 
 The implemented `./graph` module is the deterministic core that later adapters and commands will call. It:
@@ -134,15 +186,6 @@ flowchart LR
     H --> I["Classify selected issues"]
     I --> J["Calculate levels and batches"]
     J --> K["DependencyWaveGraph"]
-```
-
-### Set up the repository
-
-```bash
-git clone https://github.com/lscborges1/pi-github-waves.git
-cd pi-github-waves
-pnpm install --frozen-lockfile
-pnpm build
 ```
 
 ### API example
@@ -358,15 +401,15 @@ The graph planner is intentionally independent from the systems that will feed a
 
 ### Ticket contract
 
-The planned preflight will require every selected issue to exist and be readable. A selected issue already verified as completed is exempt from body and label validation because it will never be dispatched. Every other selected issue must be open, carry exactly one `agent: suitable` label without a conflicting suitability label, and contain explicit sections for context, objective, scope, out-of-scope work, expected behavior, technical notes, acceptance criteria, test scenarios, and dependencies. A malformed executable ticket will block the whole run rather than silently dispatching valid siblings under a partially trusted plan.
+The implemented preflight requires every selected Issue and recursively discovered blocker to be readable. A selected Issue already verified as completed is exempt from body and label validation because it will never be dispatched. Every other selected Issue must be open and satisfy the label and eight-section contract documented above. Malformed executable tickets remain visible as `invalid` and make the plan non-runnable.
 
-Native GitHub dependency relations will be authoritative. A structured `Blocked by: #3, #4` declaration in the issue body may act as a fallback. If both forms exist and disagree, planning will fail. No LLM will infer missing dependencies.
+Native GitHub dependency relations are the sole edge source. No body fallback or LLM inference is used.
 
-### Dry run and approval
+### Planning and future approval
 
-The planned `/waves plan #3 #4 #6` command will read and validate without GitHub or working-tree mutation. To verify completed blockers, it may first request consent for a `git fetch` that updates local remote-tracking refs; declining leaves local and remote state unchanged. Its output will include selected issues, boundary blockers, edges, validation failures, display levels, proposed paths, and concurrency.
+The implemented `/waves plan #3 #4 #6` command reads and validates without GitHub, ref, or working-tree mutation. It has no configuration, fingerprint, approval, or run state.
 
-`/waves run` will re-fetch fingerprinted inputs and require explicit confirmation. If tickets, labels, dependencies, configuration, repository identity, default branch, blocker state, or the remote tip changed, the plan will be invalidated and must be regenerated.
+A future execution slice will need to persist an approved snapshot, revalidate external state, and require explicit confirmation before dispatch. `/waves run` does not exist today.
 
 ### Workers and worktrees
 
@@ -393,9 +436,9 @@ Runs will live under `~/.pi/agent/state/github-waves/<owner>/<repo>/<run-id>/`. 
 
 ## Safety boundaries
 
-The intended system fails closed:
+The implemented planner and intended system fail closed:
 
-- no GitHub or working-tree mutation during planning; the only planned write is a disclosed, confirmed fetch of local remote-tracking metadata;
+- no GitHub, Git ref, or working-tree mutation during planning, including no fetch;
 - no execution without the `agent: suitable` label;
 - no inferred dependency edges;
 - no dispatch when validation, repository identity, auth, or ownership is ambiguous;
@@ -405,14 +448,14 @@ The intended system fails closed:
 - no automatic merge path;
 - no automatic destructive cleanup in the first version.
 
-The currently implemented graph module is narrower still: it is pure computation with no I/O capability.
+The public graph module is narrower still: it is pure computation with no I/O capability. Planning ports and `PlanResultV1` remain internal until a genuine headless client exists.
 
 ## Roadmap
 
-The dependency-wave graph foundation is implemented: stable contracts, validation, completion barriers, relevant SCCs, propagation, classification, levels, and tests. The approved future delivery slices are:
+The dependency-wave graph foundation and safe planner are implemented: stable contracts, validation, native dependency traversal, completion barriers, relevant SCCs, propagation, classification, levels, bounded TUI rendering, and tests. The delivery slices are:
 
-1. **Safe planner**
-   Package loading, configuration, read-only GitHub access, strict issue parser, canonical fingerprint, and `/waves plan` with disclosed fetch consent.
+1. **Safe planner — implemented**
+   Current pi package, read-only Git/GitHub access, strict Issue parser, native dependencies, zero-fetch completion verification, and `/waves plan`.
 2. **One-issue tracer**
    Approval, journal, lock, one worktree, one pi worker, PR reconciliation, and `/waves status`.
 3. **Resumable graph**
@@ -422,13 +465,15 @@ The dependency-wave graph foundation is implemented: stable contracts, validatio
 5. **Hardening**
    Recovery-matrix coverage, ownership collision tests, output bounds, documentation, and end-to-end validation.
 
+A web dashboard remains deferred until durable journal, snapshot, and status data provide a stable read model. A read-only SwiftUI menu-bar companion may follow that model later; macOS approvals or execution stay deferred until a stable audited local protocol exists.
+
 Each slice must remain demonstrable through public behavior and extend the same deterministic state model.
 
 ## Development
 
 Tooling:
 
-- Node.js 22 is the currently tested development runtime.
+- Node.js 22.19 or newer is required.
 - Use pnpm for dependency management and project scripts.
 
 Commands:
@@ -446,7 +491,12 @@ Current layout:
 
 ```text
 src/graph/      Public graph contracts and implementation
-test/graph/     Validation, planning, cycle, property, complexity, and immutability tests
+src/planning/   Internal command, ticket, traversal, diagnostics, and safety contracts
+src/adapters/   Read-only subprocess, Git, and GitHub adapters
+src/presentation/ Bounded deterministic textual report
+extensions/     Bundled pi extension
+skills/         Bundled operating skill
+test/           Unit, contract, integration, property, and complexity tests
 docs/           Architecture, specifications, and implementation plans
 dist/           Generated ESM JavaScript and declarations
 ```
