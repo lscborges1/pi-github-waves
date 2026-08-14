@@ -12,12 +12,11 @@
   ],
   "files": [
     "dist",
-    "extensions",
     "skills"
   ],
   "pi": {
     "extensions": [
-      "./extensions"
+      "./dist/extensions"
     ],
     "skills": [
       "./skills"
@@ -25,8 +24,8 @@
   },
   "exports": {
     "./graph": {
-      "types": "./dist/graph/index.d.ts",
-      "import": "./dist/graph/index.js"
+      "types": "./dist/src/graph/index.d.ts",
+      "import": "./dist/src/graph/index.js"
     }
   },
   "scripts": {
