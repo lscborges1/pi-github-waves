@@ -215,6 +215,12 @@ export function createGitHubReadPort(
         issueSchema,
         await rest(`/repos/${path(owner)}/${path(name)}/issues/${number}`),
       );
+      if (issue.number !== number) {
+        throw new AdapterError(
+          "invalid_response",
+          "GitHub returned an unexpected issue number",
+        );
+      }
       if (issue.pull_request !== undefined) {
         throw new AdapterError(
           "invalid_response",

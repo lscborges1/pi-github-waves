@@ -84,6 +84,26 @@ describe("createGitHubReadPort", () => {
     });
   });
 
+  test("should reject an issue response for a different number", async () => {
+    const runner = fixedRunner(
+      jsonResult({
+        node_id: "issue-2",
+        number: 2,
+        title: "Different issue",
+        html_url: "https://github.com/acme/waves/issues/2",
+        state: "open",
+        labels: [],
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-02T00:00:00Z",
+        body: "",
+      }),
+    );
+
+    await expect(port(runner).getIssue("acme", "waves", 1)).rejects.toMatchObject({
+      code: "invalid_response",
+    });
+  });
+
   test("should parse native dependency pages and detect a full page", async () => {
     const dependencies = Array.from({ length: 100 }, (_, index) => ({
       repository_url: "https://api.github.com/repos/acme/waves",
