@@ -4,6 +4,7 @@ import type {
   PlanDiagnostic,
   TicketSection,
 } from "./contracts.js";
+import { asciiLowercase } from "./text.js";
 
 const MAX_ISSUE_BODY_BYTES = 128 * 1024;
 const ATX_LEVEL_TWO = /^ {0,3}##[\t ]+(.*)$/u;
@@ -80,12 +81,12 @@ export function parseTicket(
   const occurrences = new Map<TicketSection, SectionOccurrence[]>();
 
   for (const [rootIndex, node] of root.children.entries()) {
-    if (!isAtxLevelTwo(node, lines)) {
+    if (!isRootAtxLevelTwo(node, lines)) {
       continue;
     }
     boundaries.add(rootIndex);
 
-    if (!node.children.every(isTextNode)) {
+    if (!isSectionHeading(node, lines) || !node.children.every(isTextNode)) {
       continue;
     }
     const heading = asciiLowercase(
@@ -154,13 +155,21 @@ function isTextNode(node: HeadingChild): node is TextNode {
   return node.type === "text";
 }
 
-function isAtxLevelTwo(
+function isRootAtxLevelTwo(
   node: RootNode,
   lines: readonly string[],
 ): node is HeadingNode {
   if (node.type !== "heading" || node.depth !== 2) {
     return false;
   }
+  const line = lines[(node.position?.start.line ?? 1) - 1] ?? "";
+  return /^ {0,3}##(?:[\t ]|$)/u.test(line);
+}
+
+function isSectionHeading(
+  node: HeadingNode,
+  lines: readonly string[],
+): boolean {
   const line = lines[(node.position?.start.line ?? 1) - 1] ?? "";
   const match = ATX_LEVEL_TWO.exec(line);
   return match !== null && !CLOSING_HASHES.test(match[1] ?? "");
@@ -206,10 +215,6 @@ function hasRootListItem(nodes: readonly RootNode[]): boolean {
   return nodes.some(
     (node) => node.type === "list" && node.children.length > 0,
   );
-}
-
-function asciiLowercase(value: string): string {
-  return value.replace(/[A-Z]/gu, (character) => character.toLowerCase());
 }
 
 function diagnostic(

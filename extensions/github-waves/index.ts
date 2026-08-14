@@ -39,6 +39,13 @@ export interface GitHubWavesDependencies {
   ) => RepositoryPort;
   readonly createGitHub: (signal: AbortSignal | undefined) => GitHubReadPort;
   readonly plan: typeof planWaves;
+  readonly reportUnexpectedError: (
+    error: unknown,
+    context: {
+      readonly operation: "waves_plan";
+      readonly selectedIssueCount: number;
+    },
+  ) => void;
 }
 
 const DEFAULT_DEPENDENCIES: GitHubWavesDependencies = {
@@ -47,6 +54,15 @@ const DEFAULT_DEPENDENCIES: GitHubWavesDependencies = {
   createGitHub: (signal) =>
     createGitHubReadPort(signal === undefined ? {} : { signal }),
   plan: planWaves,
+  reportUnexpectedError: (error, context) => {
+    process.stderr.write(
+      `${JSON.stringify({
+        event: "github_waves_unexpected_error",
+        ...context,
+        errorName: error instanceof Error ? error.name : "UnknownThrownValue",
+      })}\n`,
+    );
+  },
 };
 
 export default function registerGitHubWaves(
@@ -103,7 +119,11 @@ export default function registerGitHubWaves(
               github: dependencies.createGitHub(context.signal),
             },
           );
-        } catch {
+        } catch (error: unknown) {
+          dependencies.reportUnexpectedError(error, {
+            operation: "waves_plan",
+            selectedIssueCount: parsed.selectedNumbers.length,
+          });
           outcome = {
             kind: "fatal",
             code: "invalid_response",

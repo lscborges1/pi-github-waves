@@ -95,6 +95,20 @@ describe("parseTicket", () => {
     });
   });
 
+  test("should stop section content at an unknown heading with closing hashes", () => {
+    const body = VALID_TICKET.replace(
+      "Context text.",
+      "## Notes ###\nContent from an unknown section.",
+    );
+
+    expect(parseTicket(7, body)).toMatchObject({
+      kind: "invalid",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: "empty_section", section: "context" }),
+      ]),
+    });
+  });
+
   test("should ignore list items nested inside a block quote", () => {
     const body = VALID_TICKET.replace(
       "- The behavior is observable.",

@@ -1,6 +1,6 @@
+import { MAX_SELECTED_NODES } from "../graph/index.js";
 import type { PlanDiagnostic } from "./contracts.js";
 
-const MAX_ISSUE_ARGUMENTS = 50;
 const ISSUE_TOKEN = /^#?([1-9]\d*)$/;
 
 export type ParsePlanCommandOutcome =
@@ -22,8 +22,8 @@ export function parsePlanCommand(raw: string): ParsePlanCommandOutcome {
     return invalid("expected: /waves plan ISSUE...");
   }
 
-  if (tokens.length < 1 || tokens.length > MAX_ISSUE_ARGUMENTS) {
-    return invalid("expected 1..50 issues");
+  if (tokens.length < 1 || tokens.length > MAX_SELECTED_NODES) {
+    return invalid(`expected 1..${MAX_SELECTED_NODES} issues`);
   }
 
   const inputOrder: number[] = [];

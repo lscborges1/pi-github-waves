@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 
 import {
   createGitHubReadPort,
@@ -12,6 +13,8 @@ import type {
   ProcessResult,
   ProcessRunner,
 } from "../../src/adapters/run-process.js";
+
+const argvSchema = z.array(z.string());
 
 describe("createGitHubReadPort", () => {
   test("should authenticate against github.com without exposing credentials", async () => {
@@ -255,25 +258,27 @@ describe("createGitHubReadPort", () => {
   test("should invoke a fake gh executable with safe argv", async () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "waves-gh-"));
     const recordPath = join(temporaryDirectory, "calls.jsonl");
-    const previousRecord = process.env.WAVES_TEST_RECORD;
-    const previousResults = process.env.WAVES_TEST_RESULTS;
-    process.env.WAVES_TEST_RECORD = recordPath;
-    process.env.WAVES_TEST_RESULTS = JSON.stringify([
-      jsonResult({ status: "ahead" }),
-    ]);
+    const environment = {
+      ...process.env,
+      WAVES_TEST_RECORD: recordPath,
+      WAVES_TEST_RESULTS: JSON.stringify([jsonResult({ status: "ahead" })]),
+    };
 
     try {
       const executable = fileURLToPath(
         new URL("../fixtures/bin/fake-cli.mjs", import.meta.url),
       );
-      const github = createGitHubReadPort({ ghExecutable: executable });
+      const github = createGitHubReadPort({
+        ghExecutable: executable,
+        environment,
+      });
 
       await github.compareCommits("acme", "waves", "base", "head");
 
       const calls = (await readFile(recordPath, "utf8"))
         .trim()
         .split("\n")
-        .map((line) => JSON.parse(line) as unknown);
+        .map((line) => argvSchema.parse(JSON.parse(line) as unknown));
       expect(calls).toEqual([
         expect.arrayContaining([
           "--method",
@@ -282,8 +287,6 @@ describe("createGitHubReadPort", () => {
         ]),
       ]);
     } finally {
-      restoreEnvironment("WAVES_TEST_RECORD", previousRecord);
-      restoreEnvironment("WAVES_TEST_RESULTS", previousResults);
       await rm(temporaryDirectory, { recursive: true });
     }
   });
@@ -309,12 +312,4 @@ function sequenceRunner(results: readonly ProcessResult[]) {
     if (result === undefined) throw new Error("unexpected process call");
     return result;
   });
-}
-
-function restoreEnvironment(name: string, value: string | undefined): void {
-  if (value === undefined) {
-    delete process.env[name];
-  } else {
-    process.env[name] = value;
-  }
 }

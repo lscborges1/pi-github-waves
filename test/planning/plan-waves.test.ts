@@ -39,6 +39,37 @@ const REMOTE_REPOSITORY: RemoteRepositorySnapshot = {
 };
 
 describe("planWaves", () => {
+  test("should reject an unsupported repository before checking authentication", async () => {
+    const { ports } = fakePorts({
+      issues: new Map(),
+      repositoryError: new AdapterError(
+        "unsupported_repository",
+        "unsupported repository",
+      ),
+      authenticationError: new AdapterError(
+        "not_authenticated",
+        "not authenticated",
+      ),
+    });
+
+    await expect(planWaves(input([1]), ports)).resolves.toEqual({
+      kind: "fatal",
+      code: "unsupported_repository",
+      message: "unsupported repository",
+      retryAfterSeconds: null,
+    });
+  });
+
+  test("should propagate unexpected failures to the reporting boundary", async () => {
+    const unexpectedError = new Error("unexpected repository failure");
+    const { ports } = fakePorts({
+      issues: new Map(),
+      repositoryError: unexpectedError,
+    });
+
+    await expect(planWaves(input([1]), ports)).rejects.toBe(unexpectedError);
+  });
+
   test("should build a deterministic graph when selected issues are eligible", async () => {
     const issues = new Map([
       [1, issue({ number: 1, nodeId: "issue-1" })],
@@ -284,12 +315,42 @@ describe("planWaves", () => {
             graphNode: { disposition: "invalid" },
           },
         ],
-        diagnostics: [
+        diagnostics: expect.arrayContaining([
           expect.objectContaining({ code: "issue_closed_uncompleted" }),
-        ],
+        ]),
       },
     });
     expect(compareCommits).not.toHaveBeenCalled();
+  });
+
+  test("should aggregate ticket and label failures for closed uncompleted work", async () => {
+    const { ports } = fakePorts({
+      issues: new Map([
+        [
+          3,
+          issue({
+            number: 3,
+            nodeId: "issue-3",
+            state: "CLOSED",
+            labels: [],
+            body: "",
+          }),
+        ],
+      ]),
+    });
+
+    const outcome = await planWaves(input([3]), ports);
+
+    expect(outcome).toMatchObject({
+      kind: "planned",
+      plan: {
+        diagnostics: expect.arrayContaining([
+          expect.objectContaining({ code: "issue_closed_uncompleted" }),
+          expect.objectContaining({ code: "label_missing" }),
+          expect.objectContaining({ code: "missing_section" }),
+        ]),
+      },
+    });
   });
 
   test("should classify only reachable current-default-branch pull requests as completion", async () => {
@@ -333,6 +394,28 @@ describe("planWaves", () => {
     });
   });
 
+  test("should preserve authorization failures from completion comparison", async () => {
+    const { ports } = fakePorts({
+      issues: new Map([
+        [
+          3,
+          issue({ number: 3, nodeId: "issue-3", state: "CLOSED", body: "" }),
+        ],
+      ]),
+      closures: new Map([[3, [closedByPullRequest({ number: 33 })]]]),
+      comparisonErrors: new Map([
+        ["merge-33", new AdapterError("forbidden", "comparison forbidden")],
+      ]),
+    });
+
+    await expect(planWaves(input([3]), ports)).resolves.toEqual({
+      kind: "fatal",
+      code: "forbidden",
+      message: "comparison forbidden",
+      retryAfterSeconds: null,
+    });
+  });
+
   test("should add none of a parent's boundary nodes when its batch exceeds the limit", async () => {
     const dependencies = Array.from({ length: 201 }, (_, index) => ({
       repositoryUrl: "https://api.github.com/repos/acme/waves",
@@ -360,6 +443,40 @@ describe("planWaves", () => {
             code: "boundary_limit_exceeded",
             issueNumber: 1,
             details: { parentIssueNumber: 1, attemptedTotal: 201, maximum: 200 },
+          }),
+        ],
+      },
+    });
+  });
+
+  test("should stop dependency pagination once page three proves the boundary limit", async () => {
+    const page = (pageNumber: number) =>
+      Array.from({ length: 100 }, (_, index) =>
+        dependencySnapshot((pageNumber - 1) * 100 + index + 2),
+      );
+    const { ports } = fakePorts({
+      issues: new Map([[1, issue({ number: 1, nodeId: "issue-1" })]]),
+      dependencyPage: (_number, pageNumber) => {
+        if (pageNumber > 3) {
+          throw new AdapterError("process_failed", "unexpected fourth page");
+        }
+        return {
+          dependencies: page(pageNumber),
+          page: pageNumber,
+          hasNextPage: true,
+        };
+      },
+    });
+
+    await expect(planWaves(input([1]), ports)).resolves.toMatchObject({
+      kind: "planned",
+      plan: {
+        graph: null,
+        boundary: [],
+        diagnostics: [
+          expect.objectContaining({
+            code: "boundary_limit_exceeded",
+            details: { parentIssueNumber: 1, attemptedTotal: 300, maximum: 200 },
           }),
         ],
       },
@@ -550,6 +667,25 @@ describe("planWaves", () => {
     expect(forwardOutcome).toEqual(reverseOutcome);
   });
 
+  test("should load each breadth level in issue-number order", async () => {
+    const { ports, getIssue } = fakePorts({
+      issues: new Map(
+        [2, 10, 20, 100].map((number) => [
+          number,
+          issue({ number, nodeId: `issue-${number}` }),
+        ]),
+      ),
+      dependencies: new Map([
+        [10, [dependencySnapshot(100)]],
+        [20, [dependencySnapshot(2)]],
+      ]),
+    });
+
+    await planWaves(input([10, 20]), ports);
+
+    expect(getIssue.mock.calls.map((call) => call[2])).toEqual([10, 20, 2, 100]);
+  });
+
   test("should add none of a parent's edges when its batch exceeds the edge limit", async () => {
     const selectedNumbers = Array.from({ length: 50 }, (_, index) => index + 1);
     const boundaryNumbers = Array.from(
@@ -626,7 +762,13 @@ function issue(
 
 function fakePorts(options: {
   readonly issues: ReadonlyMap<number, IssueSnapshot>;
+  readonly repositoryError?: unknown;
+  readonly authenticationError?: AdapterError;
   readonly dependencies?: ReadonlyMap<number, DependencyPage["dependencies"]>;
+  readonly dependencyPage?: (
+    number: number,
+    page: number,
+  ) => DependencyPage;
   readonly closures?: ReadonlyMap<number, ClosureEventPage["events"]>;
   readonly issueErrors?: ReadonlyMap<number, AdapterError>;
   readonly closureErrors?: ReadonlyMap<number, AdapterError>;
@@ -638,34 +780,44 @@ function fakePorts(options: {
     string,
     "ahead" | "behind" | "diverged" | "identical"
   >;
+  readonly comparisonErrors?: ReadonlyMap<string, AdapterError>;
 }) {
   const repository: RepositoryPort = {
-    discover: vi.fn(async () => ({
-      worktreeRoot: "/worktree",
-      commonDir: "/repo/.git",
-      originUrl: "git@github.com:acme/waves.git",
-      owner: "acme",
-      name: "waves",
-    })),
+    discover: vi.fn(async () => {
+      if (options.repositoryError !== undefined) throw options.repositoryError;
+      return {
+        worktreeRoot: "/worktree",
+        commonDir: "/repo/.git",
+        originUrl: "git@github.com:acme/waves.git",
+        owner: "acme",
+        name: "waves",
+      };
+    }),
   };
   const getBlockedBy = vi.fn(
-    async (_owner: string, _name: string, number: number, page: number) => ({
-      dependencies:
-        page === 1 ? (options.dependencies?.get(number) ?? []) : [],
-      page,
-      hasNextPage: false,
-    }),
+    async (_owner: string, _name: string, number: number, page: number) =>
+      options.dependencyPage?.(number, page) ?? {
+        dependencies:
+          page === 1 ? (options.dependencies?.get(number) ?? []) : [],
+        page,
+        hasNextPage: false,
+      },
   );
+  const getIssue = vi.fn(async (_owner: string, _name: string, number: number) => {
+    const error = options.issueErrors?.get(number);
+    if (error !== undefined) throw error;
+    const snapshot = options.issues.get(number);
+    if (snapshot === undefined) throw new Error(`Missing fixture #${number}`);
+    return snapshot;
+  });
   const github: GitHubReadPort = {
-    authenticate: vi.fn(async () => undefined),
-    getRepository: vi.fn(async () => REMOTE_REPOSITORY),
-    getIssue: vi.fn(async (_owner, _name, number) => {
-      const error = options.issueErrors?.get(number);
-      if (error !== undefined) throw error;
-      const snapshot = options.issues.get(number);
-      if (snapshot === undefined) throw new Error(`Missing fixture #${number}`);
-      return snapshot;
+    authenticate: vi.fn(async () => {
+      if (options.authenticationError !== undefined) {
+        throw options.authenticationError;
+      }
     }),
+    getRepository: vi.fn(async () => REMOTE_REPOSITORY),
+    getIssue,
     getBlockedBy,
     getClosureEvents: vi.fn(async (_owner, _name, number, cursor) => {
       const error = options.closureErrors?.get(number);
@@ -678,14 +830,17 @@ function fakePorts(options: {
         }
       );
     }),
-    compareCommits: vi.fn(async (_owner, _name, baseOid) => ({
-      status: options.comparisonStatuses?.get(baseOid) ?? "ahead",
-    })),
+    compareCommits: vi.fn(async (_owner, _name, baseOid) => {
+      const error = options.comparisonErrors?.get(baseOid);
+      if (error !== undefined) throw error;
+      return { status: options.comparisonStatuses?.get(baseOid) ?? "ahead" };
+    }),
   };
 
   return {
     ports: { repository, github },
     getBlockedBy,
+    getIssue,
     compareCommits: github.compareCommits,
   };
 }

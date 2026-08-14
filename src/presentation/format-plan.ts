@@ -4,10 +4,12 @@ import type {
   PlanDiagnostic,
   PlanResultV1,
 } from "../planning/contracts.js";
+import { compareOpaqueId } from "../graph/compare.js";
 import { sanitizeInlineText } from "../planning/sanitize.js";
 
 const DEFAULT_MAXIMUM_BYTES = 50 * 1024;
 const DEFAULT_MAXIMUM_LINES = 2_000;
+const SAFETY_FOOTER = "No execution occurred.";
 
 export interface RenderLimits {
   readonly maximumBytes: number;
@@ -36,7 +38,7 @@ export function formatPlanOutcome(
         : [
             `Waves plan cancelled: ${sanitizeInlineText(outcome.message)}`,
             "",
-            "No execution occurred.",
+            SAFETY_FOOTER,
           ];
   const bounded = boundLines(lines, limits);
   return {
@@ -118,7 +120,7 @@ function plannedLines(plan: PlanResultV1): readonly string[] {
   for (const diagnostic of plan.diagnostics) {
     lines.push(formatDiagnostic(diagnostic));
   }
-  lines.push("", "No execution occurred.");
+  lines.push("", SAFETY_FOOTER);
   return lines;
 }
 
@@ -127,11 +129,8 @@ function fatalLines(
 ): readonly string[] {
   return [
     `Waves plan failed [${outcome.code}]: ${inline(outcome.message)}`,
-    ...(outcome.retryAfterSeconds === null
-      ? []
-      : [`Retry after: ${outcome.retryAfterSeconds} seconds`]),
     "",
-    "No execution occurred.",
+    SAFETY_FOOTER,
   ];
 }
 
@@ -151,7 +150,7 @@ function formatDiagnostic(diagnostic: PlanDiagnostic): string {
     diagnostic.section === null ? "" : ` section=${diagnostic.section}`;
   const line = diagnostic.line === null ? "" : ` line=${diagnostic.line}`;
   const details = Object.keys(diagnostic.details)
-    .sort(compareText)
+    .sort(compareOpaqueId)
     .map((key) => `${inline(key)}=${inline(String(diagnostic.details[key]))}`)
     .join(" ");
   return `- ${diagnostic.severity.toUpperCase()} ${diagnostic.code}${issue}${section}${line}${
@@ -174,22 +173,30 @@ function boundLines(
   }
 
   const included: string[] = [];
-  const contentLineLimit = Math.max(0, maximumLines - 1);
-  for (const line of lines) {
+  const contentLines =
+    lines.at(-1) === SAFETY_FOOTER ? lines.slice(0, -1) : lines;
+  if (maximumLines === 1) {
+    return {
+      text: truncateUtf8(SAFETY_FOOTER, maximumBytes),
+      truncated: true,
+    };
+  }
+  const contentLineLimit = Math.max(0, maximumLines - 2);
+  for (const line of contentLines) {
     if (included.length >= contentLineLimit) break;
     const nextCount = included.length + 1;
-    const marker = omissionMarker(lines.length - nextCount);
-    const candidate = [...included, line, marker].join("\n");
+    const marker = omissionMarker(contentLines.length - nextCount);
+    const candidate = [...included, line, marker, SAFETY_FOOTER].join("\n");
     if (Buffer.byteLength(candidate, "utf8") > maximumBytes) break;
     included.push(line);
   }
-  const marker = omissionMarker(lines.length - included.length);
-  const text = [...included, marker].join("\n");
+  const marker = omissionMarker(contentLines.length - included.length);
+  const text = [...included, marker, SAFETY_FOOTER].join("\n");
   return {
     text:
       Buffer.byteLength(text, "utf8") <= maximumBytes
         ? text
-        : truncateUtf8(marker, maximumBytes),
+        : truncateUtf8(SAFETY_FOOTER, maximumBytes),
     truncated: true,
   };
 }
@@ -209,8 +216,4 @@ function truncateUtf8(value: string, maximumBytes: number): string {
 
 function inline(value: string): string {
   return sanitizeInlineText(value);
-}
-
-function compareText(a: string, b: string): number {
-  return a === b ? 0 : a < b ? -1 : 1;
 }

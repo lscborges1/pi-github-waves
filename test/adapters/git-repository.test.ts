@@ -3,12 +3,15 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 
 import {
   createRepositoryPort,
   parseGitHubOrigin,
 } from "../../src/adapters/git-repository.js";
 import type { ProcessRunner } from "../../src/adapters/run-process.js";
+
+const argvSchema = z.array(z.string());
 
 describe("parseGitHubOrigin", () => {
   test.each([
@@ -24,6 +27,7 @@ describe("parseGitHubOrigin", () => {
   });
 
   test.each([
+    "GIT@github.com:acme/waves.git",
     "git://github.com/acme/waves.git",
     "git@github.com:acme/waves",
     "ssh://alice@github.com/acme/waves.git",
@@ -104,36 +108,36 @@ describe("createRepositoryPort", () => {
   test("should invoke a fake git executable without mutating commands", async () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "waves-git-"));
     const recordPath = join(temporaryDirectory, "calls.jsonl");
-    const previousRecord = process.env.WAVES_TEST_RECORD;
-    const previousResults = process.env.WAVES_TEST_RESULTS;
-    process.env.WAVES_TEST_RECORD = recordPath;
-    process.env.WAVES_TEST_RESULTS = JSON.stringify([
-      { stdout: "true\n" },
-      { stdout: `${temporaryDirectory}\n` },
-      { stdout: `${join(temporaryDirectory, ".git")}\n` },
-      { stdout: "https://github.com/acme/waves.git\n" },
-    ]);
+    const environment = {
+      ...process.env,
+      WAVES_TEST_RECORD: recordPath,
+      WAVES_TEST_RESULTS: JSON.stringify([
+        { stdout: "true\n" },
+        { stdout: `${temporaryDirectory}\n` },
+        { stdout: `${join(temporaryDirectory, ".git")}\n` },
+        { stdout: "https://github.com/acme/waves.git\n" },
+      ]),
+    };
 
     try {
       const executable = fileURLToPath(
         new URL("../fixtures/bin/fake-cli.mjs", import.meta.url),
       );
 
-      await createRepositoryPort({ gitExecutable: executable }).discover(
-        temporaryDirectory,
-      );
+      await createRepositoryPort({
+        gitExecutable: executable,
+        environment,
+      }).discover(temporaryDirectory);
 
       const calls = (await readFile(recordPath, "utf8"))
         .trim()
         .split("\n")
-        .map((line) => JSON.parse(line) as readonly string[]);
+        .map((line) => argvSchema.parse(JSON.parse(line) as unknown));
       expect(calls).toHaveLength(4);
       expect(calls.flat().join(" ")).not.toMatch(
         /\b(?:fetch|pull|push|commit|checkout|switch|reset|clean)\b/iu,
       );
     } finally {
-      restoreEnvironment("WAVES_TEST_RECORD", previousRecord);
-      restoreEnvironment("WAVES_TEST_RESULTS", previousResults);
       await rm(temporaryDirectory, { recursive: true });
     }
   });
@@ -149,12 +153,4 @@ function sequenceRunner(
     if (result === undefined) throw new Error("unexpected process call");
     return result;
   });
-}
-
-function restoreEnvironment(name: string, value: string | undefined): void {
-  if (value === undefined) {
-    delete process.env[name];
-  } else {
-    process.env[name] = value;
-  }
 }

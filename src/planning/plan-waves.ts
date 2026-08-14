@@ -5,7 +5,9 @@ import {
   type DependencyEdge,
   type DependencyNode,
 } from "../graph/index.js";
+import { compareOpaqueId } from "../graph/compare.js";
 import type {
+  ClosureEventPage,
   ClosureEventSnapshot,
   CommandOutcome,
   CompletionEvidence,
@@ -23,6 +25,7 @@ import type {
 import { AdapterError } from "./adapter-error.js";
 import { sortPlanDiagnostics } from "./diagnostics.js";
 import { parseTicket } from "./parse-ticket.js";
+import { asciiLowercase } from "./text.js";
 
 const MAX_CLOSURE_EVENTS = 1_000;
 const MAX_CONCURRENCY = 3 as const;
@@ -32,13 +35,26 @@ interface LoadedIssue {
   readonly completion: CompletionEvidence;
 }
 
+class ClosureReadError extends AdapterError {
+  declare readonly code: "not_found" | "forbidden" | "gone";
+
+  constructor(
+    error: AdapterError & {
+      readonly code: "not_found" | "forbidden" | "gone";
+    },
+  ) {
+    super(error.code, error.message, error.retryAfterSeconds, { cause: error });
+    this.name = "ClosureReadError";
+  }
+}
+
 export async function planWaves(
   input: PlanWavesInput,
   ports: PlanningPorts,
 ): Promise<CommandOutcome> {
   try {
-    await ports.github.authenticate();
     const discovered = await ports.repository.discover(input.cwd);
+    await ports.github.authenticate();
     const repository = await ports.github.getRepository(
       discovered.owner,
       discovered.name,
@@ -52,6 +68,7 @@ export async function planWaves(
 
     return await buildPlan(input, ports, repository);
   } catch (error: unknown) {
+    if (!(error instanceof AdapterError)) throw error;
     return adapterFailure(error);
   }
 }
@@ -62,8 +79,10 @@ async function buildPlan(
   repository: RemoteRepositorySnapshot,
 ): Promise<CommandOutcome> {
   const selectedSet = new Set(input.selection.selectedNumbers);
-  const queue = [...input.selection.selectedNumbers].sort((a, b) => a - b);
-  const queued = new Set(queue);
+  const queue = [...input.selection.selectedNumbers]
+    .sort((a, b) => a - b)
+    .map((number) => ({ number, depth: 0 }));
+  const queued = new Set(queue.map((entry) => entry.number));
   const boundaryNumbers = new Set<number>();
   const loaded = new Map<number, LoadedIssue>();
   const snapshots = new Map<number, IssueSnapshot>();
@@ -74,8 +93,9 @@ async function buildPlan(
   let completeInput = true;
 
   for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
-    const issueNumber = queue[queueIndex];
-    if (issueNumber === undefined) continue;
+    const queuedIssue = queue[queueIndex];
+    if (queuedIssue === undefined) continue;
+    const issueNumber = queuedIssue.number;
 
     let snapshot: IssueSnapshot;
     try {
@@ -97,7 +117,7 @@ async function buildPlan(
     try {
       completion = await loadCompletion(snapshot, repository, ports);
     } catch (error: unknown) {
-      if (!isReportableAdapterError(error)) throw error;
+      if (!(error instanceof ClosureReadError)) throw error;
       unavailable.add(issueNumber);
       diagnostics.push(unavailableDiagnostic(issueNumber, "closure", error));
       completeInput = false;
@@ -112,7 +132,13 @@ async function buildPlan(
 
     let dependencies: readonly DependencySnapshot[];
     try {
-      dependencies = await loadDependencies(issueNumber, repository, ports);
+      dependencies = await loadDependencies(
+        issueNumber,
+        repository,
+        ports,
+        selectedSet,
+        boundaryNumbers,
+      );
     } catch (error: unknown) {
       if (!isReportableAdapterError(error)) throw error;
       diagnostics.push(
@@ -208,9 +234,10 @@ async function buildPlan(
       boundaryNumbers.add(dependency.number);
       if (!queued.has(dependency.number)) {
         queued.add(dependency.number);
-        queue.push(dependency.number);
+        queue.push({ number: dependency.number, depth: queuedIssue.depth + 1 });
       }
     }
+    queue.sort((a, b) => a.depth - b.depth || a.number - b.number);
   }
 
   return assemblePlan({
@@ -230,6 +257,8 @@ async function loadDependencies(
   issueNumber: number,
   repository: RemoteRepositorySnapshot,
   ports: PlanningPorts,
+  selectedNumbers: ReadonlySet<number>,
+  boundaryNumbers: ReadonlySet<number>,
 ): Promise<readonly DependencySnapshot[]> {
   const byIdentity = new Map<string, DependencySnapshot>();
   for (let page = 1; ; page += 1) {
@@ -248,6 +277,12 @@ async function loadDependencies(
       );
     }
     if (!result.hasNextPage) break;
+    const unseenBoundaryCount = [...byIdentity.values()].filter(
+      (dependency) =>
+        !selectedNumbers.has(dependency.number) &&
+        !boundaryNumbers.has(dependency.number),
+    ).length;
+    if (boundaryNumbers.size + unseenBoundaryCount > MAX_BOUNDARY_NODES) break;
   }
   return [...byIdentity.values()].sort(compareDependency);
 }
@@ -264,12 +299,18 @@ async function loadCompletion(
   const events: ClosureEventSnapshot[] = [];
   let cursor: string | null = null;
   for (;;) {
-    const page = await ports.github.getClosureEvents(
-      repository.owner,
-      repository.name,
-      issue.number,
-      cursor,
-    );
+    let page: ClosureEventPage;
+    try {
+      page = await ports.github.getClosureEvents(
+        repository.owner,
+        repository.name,
+        issue.number,
+        cursor,
+      );
+    } catch (error: unknown) {
+      if (!isReportableAdapterError(error)) throw error;
+      throw new ClosureReadError(error);
+    }
     if (events.length + page.events.length > MAX_CLOSURE_EVENTS) {
       throw new AdapterError(
         "resource_limit",
@@ -515,6 +556,7 @@ function selectedStatus(
   diagnostics: PlanDiagnostic[],
 ): DependencyNode["status"] {
   if (issue.completion.completed) return "complete";
+  let valid = true;
   if (issue.snapshot.state === "CLOSED") {
     diagnostics.push({
       severity: "error",
@@ -524,10 +566,9 @@ function selectedStatus(
       line: null,
       details: { state: "CLOSED" },
     });
-    return "invalid";
+    valid = false;
   }
 
-  let valid = true;
   const labels = normalizeLabels(issue.snapshot.labels);
   if (!labels.includes("agent: suitable")) {
     diagnostics.push({
@@ -566,7 +607,7 @@ function selectedStatus(
 
 function normalizeLabels(labels: readonly string[]): readonly string[] {
   return [...new Set(labels.map((label) => asciiLowercase(trimAscii(label))))].sort(
-    compareText,
+    compareOpaqueId,
   );
 }
 
@@ -575,18 +616,14 @@ function trimAscii(value: string): string {
 }
 
 function compareDependency(a: DependencySnapshot, b: DependencySnapshot): number {
-  return a.number - b.number || compareText(a.issueNodeId, b.issueNodeId);
+  return a.number - b.number || compareOpaqueId(a.issueNodeId, b.issueNodeId);
 }
 
 function compareCloser(
   a: PullRequestCloserSnapshot,
   b: PullRequestCloserSnapshot,
 ): number {
-  return a.number - b.number || compareText(a.nodeId, b.nodeId);
-}
-
-function compareText(a: string, b: string): number {
-  return a === b ? 0 : a < b ? -1 : 1;
+  return a.number - b.number || compareOpaqueId(a.nodeId, b.nodeId);
 }
 
 function edgeKey(blockerNumber: number, blockedNumber: number): string {
@@ -597,10 +634,6 @@ function sameAscii(a: string, b: string): boolean {
   return asciiLowercase(a) === asciiLowercase(b);
 }
 
-function asciiLowercase(value: string): string {
-  return value.replace(/[A-Z]/gu, (character) => character.toLowerCase());
-}
-
 function fatal(
   code: Extract<CommandOutcome, { kind: "fatal" }>["code"],
   message: string,
@@ -608,10 +641,7 @@ function fatal(
   return { kind: "fatal", code, message, retryAfterSeconds: null };
 }
 
-function adapterFailure(error: unknown): CommandOutcome {
-  if (!(error instanceof AdapterError)) {
-    return fatal("invalid_response", "unexpected planning adapter failure");
-  }
+function adapterFailure(error: AdapterError): CommandOutcome {
   switch (error.code) {
     case "cancelled":
       return { kind: "cancelled", message: error.message };

@@ -32,7 +32,7 @@ describe("formatPlanOutcome", () => {
     const rendered = formatPlanOutcome(outcome);
 
     expect(rendered.text).toBe(
-      "Waves plan failed [rate_limited]: GitHub rate limit reached\nRetry after: 17 seconds\n\nNo execution occurred.",
+      "Waves plan failed [rate_limited]: GitHub rate limit reached\n\nNo execution occurred.",
     );
     expect(rendered.text).not.toContain("\u001b");
   });
@@ -65,12 +65,22 @@ describe("formatPlanOutcome", () => {
     );
     expect(rendered.text.split("\n").length).toBeLessThanOrEqual(2_000);
     expect(rendered.text).toMatch(/Output truncated: \d+ lines omitted/u);
+    expect(rendered.text.endsWith("No execution occurred.")).toBe(true);
   });
 
   test("should render repeated plans deterministically", () => {
     const outcome: CommandOutcome = { kind: "planned", plan: plan() };
 
     expect(formatPlanOutcome(outcome)).toEqual(formatPlanOutcome(outcome));
+  });
+
+  test("should honor a one-line render limit when output is truncated", () => {
+    const rendered = formatPlanOutcome(
+      { kind: "cancelled", message: "cancelled" },
+      { maximumBytes: 100, maximumLines: 1 },
+    );
+
+    expect(rendered.text.split("\n")).toHaveLength(1);
   });
 });
 

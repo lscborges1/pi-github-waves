@@ -16,13 +16,27 @@ import {
 
 const COMPONENT = /^[A-Za-z0-9_.-]+$/u;
 const OWNER = /^[A-Za-z0-9-]+$/u;
+const insideWorktreeSchema = z
+  .string()
+  .transform((value) => value.trim())
+  .pipe(z.literal("true"));
 const nonEmptyOutputSchema = z.string().trim().min(1);
+const originUrlsSchema = z
+  .string()
+  .transform((value) =>
+    value
+      .split(/\r?\n/gu)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0),
+  )
+  .pipe(z.tuple([z.string().min(1)]));
 
 export interface RepositoryPortOptions {
   readonly runner?: ProcessRunner;
   readonly gitExecutable?: string;
   readonly signal?: AbortSignal;
   readonly logger?: ProcessLogger;
+  readonly environment?: NodeJS.ProcessEnv;
 }
 
 export function createRepositoryPort(
@@ -40,7 +54,7 @@ export function createRepositoryPort(
         cwd,
         options,
       );
-      if (inside.trim() !== "true") {
+      if (!insideWorktreeSchema.safeParse(inside).success) {
         throw unsupported("trusted project is not a Git worktree");
       }
 
@@ -69,17 +83,11 @@ export function createRepositoryPort(
         cwd,
         options,
       );
-      const originUrls = originOutput
-        .split(/\r?\n/gu)
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
-      if (originUrls.length !== 1) {
+      const originUrls = originUrlsSchema.safeParse(originOutput);
+      if (!originUrls.success) {
         throw unsupported("repository must have exactly one origin fetch URL");
       }
-      const originUrl = originUrls[0];
-      if (originUrl === undefined) {
-        throw unsupported("repository origin is missing");
-      }
+      const [originUrl] = originUrls.data;
       const identity = parseGitHubOrigin(originUrl);
 
       return {
@@ -101,9 +109,9 @@ export function parseGitHubOrigin(originUrl: string): {
     throw unsupported("repository origin URL is unsupported");
   }
 
-  const scp = /^git@github\.com:([^/]+)\/([^/]+)\.git$/iu.exec(originUrl);
-  if (scp !== null) {
-    return validateIdentity(scp[1], scp[2]);
+  const scp = /^git@([^:]+):([^/]+)\/([^/]+)\.git$/u.exec(originUrl);
+  if (scp !== null && scp[1]?.toLowerCase() === "github.com") {
+    return validateIdentity(scp[2], scp[3]);
   }
 
   let url: URL;
@@ -150,6 +158,9 @@ async function runGit(
     cwd,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
+    ...(options.environment === undefined
+      ? {}
+      : { environment: options.environment }),
   };
   const result = await runner(executable, args, processOptions);
   if (result.exitCode !== 0) {

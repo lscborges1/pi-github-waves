@@ -135,6 +135,7 @@ export interface GitHubCliOptions {
   readonly ghExecutable?: string;
   readonly signal?: AbortSignal;
   readonly logger?: ProcessLogger;
+  readonly environment?: NodeJS.ProcessEnv;
 }
 
 export function createGitHubReadPort(
@@ -145,6 +146,9 @@ export function createGitHubReadPort(
   const processOptions: RunProcessOptions = {
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
+    ...(options.environment === undefined
+      ? {}
+      : { environment: options.environment }),
   };
 
   const invoke = async (args: readonly string[]): Promise<unknown> => {

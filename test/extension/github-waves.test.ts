@@ -127,11 +127,16 @@ describe("github-waves extension", () => {
   });
 
   test("should persist a stable fatal entry when an unexpected failure occurs", async () => {
+    const unexpectedError = new Error("secret adapter detail");
     const plan = vi.fn<GitHubWavesDependencies["plan"]>(async () => {
-      throw new Error("secret adapter detail");
+      throw unexpectedError;
     });
+    const reportUnexpectedError = vi.fn();
     const harness = extensionHarness();
-    registerGitHubWaves(harness.api, dependencies({ plan }));
+    registerGitHubWaves(
+      harness.api,
+      dependencies({ plan, reportUnexpectedError }),
+    );
     const context = commandContext({ trusted: true });
 
     await harness.command("waves").handler("plan #1", context.value);
@@ -141,6 +146,10 @@ describe("github-waves extension", () => {
       | undefined;
     expect(entry?.text).toContain("unexpected planning failure");
     expect(entry?.text).not.toContain("secret adapter detail");
+    expect(reportUnexpectedError).toHaveBeenCalledWith(unexpectedError, {
+      operation: "waves_plan",
+      selectedIssueCount: 1,
+    });
     expect(context.setStatus).toHaveBeenLastCalledWith(
       "github-waves",
       undefined,
@@ -231,6 +240,7 @@ function dependencies(
       kind: "cancelled" as const,
       message: "cancelled",
     })),
+    reportUnexpectedError: vi.fn(),
     ...overrides,
   };
 }
