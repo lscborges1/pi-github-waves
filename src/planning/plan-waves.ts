@@ -135,6 +135,10 @@ async function buildPlan(
       completeInput = false;
       continue;
     }
+    const knownIdentity = dependencyIdentity.get(issueNumber);
+    if (knownIdentity !== undefined && knownIdentity !== snapshot.nodeId) {
+      return fatal("invalid_response", "issue identity changed");
+    }
     snapshots.set(issueNumber, snapshot);
 
     let completion: CompletionEvidence;
@@ -304,15 +308,27 @@ async function loadDependencies(
       issueNumber,
       page,
     );
+    const dependencyCount = byIdentity.size;
     for (const dependency of result.dependencies) {
-      byIdentity.set(
-        `${asciiLowercase(dependency.repositoryOwner)}/${asciiLowercase(
-          dependency.repositoryName,
-        )}#${dependency.number}`,
-        dependency,
-      );
+      const identity = `${asciiLowercase(
+        dependency.repositoryOwner,
+      )}/${asciiLowercase(dependency.repositoryName)}#${dependency.number}`;
+      const knownDependency = byIdentity.get(identity);
+      if (
+        knownDependency !== undefined &&
+        knownDependency.issueNodeId !== dependency.issueNodeId
+      ) {
+        throw new AdapterError("invalid_response", "issue identity changed");
+      }
+      byIdentity.set(identity, dependency);
     }
     if (!result.hasNextPage) break;
+    if (byIdentity.size === dependencyCount) {
+      throw new AdapterError(
+        "invalid_response",
+        "dependency pagination did not advance",
+      );
+    }
     const unseenBoundaryCount = [...byIdentity.values()].filter(
       (dependency) =>
         !selectedNumbers.has(dependency.number) &&

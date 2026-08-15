@@ -176,6 +176,58 @@ describe("planWaves", () => {
     });
   });
 
+  test("should reject a boundary snapshot when its issue identity changed", async () => {
+    const { ports } = fakePorts({
+      issues: new Map([
+        [1, issue({ number: 1, nodeId: "issue-1" })],
+        [2, issue({ number: 2, nodeId: "snapshot-issue-2" })],
+      ]),
+      dependencies: new Map([
+        [
+          1,
+          [
+            {
+              ...dependencySnapshot(2),
+              issueNodeId: "dependency-issue-2",
+            },
+          ],
+        ],
+      ]),
+    });
+
+    await expect(planWaves(input([1]), ports)).resolves.toEqual({
+      kind: "fatal",
+      code: "invalid_response",
+      message: "issue identity changed",
+      retryAfterSeconds: null,
+    });
+  });
+
+  test("should reject conflicting node IDs for one canonical dependency", async () => {
+    const { ports } = fakePorts({
+      issues: new Map([
+        [1, issue({ number: 1, nodeId: "issue-1" })],
+        [2, issue({ number: 2, nodeId: "dependency-b" })],
+      ]),
+      dependencies: new Map([
+        [
+          1,
+          [
+            { ...dependencySnapshot(2), issueNodeId: "dependency-a" },
+            { ...dependencySnapshot(2), issueNodeId: "dependency-b" },
+          ],
+        ],
+      ]),
+    });
+
+    await expect(planWaves(input([1]), ports)).resolves.toEqual({
+      kind: "fatal",
+      code: "invalid_response",
+      message: "issue identity changed",
+      retryAfterSeconds: null,
+    });
+  });
+
   test("should classify malformed selected work as invalid", async () => {
     const { ports } = fakePorts({
       issues: new Map([
@@ -481,6 +533,29 @@ describe("planWaves", () => {
         ],
       },
     });
+  });
+
+  test("should reject dependency pagination when canonical identities do not advance", async () => {
+    const dependencies = Array.from({ length: 100 }, (_, index) =>
+      dependencySnapshot(index + 2),
+    );
+    const { ports, getBlockedBy } = fakePorts({
+      issues: new Map([[1, issue({ number: 1, nodeId: "issue-1" })]]),
+      dependencyPage: (_number, page) => {
+        if (page > 2) {
+          throw new AdapterError("process_failed", "unexpected third page");
+        }
+        return { dependencies, page, hasNextPage: true };
+      },
+    });
+
+    await expect(planWaves(input([1]), ports)).resolves.toEqual({
+      kind: "fatal",
+      code: "invalid_response",
+      message: "dependency pagination did not advance",
+      retryAfterSeconds: null,
+    });
+    expect(getBlockedBy).toHaveBeenCalledTimes(2);
   });
 
   test("should keep reportable issue failures in a non-runnable plan", async () => {

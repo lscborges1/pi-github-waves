@@ -42,7 +42,7 @@ Run the pi slash command with 1–50 Issue numbers:
 Read the durable report in this order:
 
 1. Confirm the repository and default-branch tip.
-2. Inspect selected dispositions: `ready`, `blocked_selected`, `blocked_external`, `cycle`, `invalid`, or `complete`.
+2. Inspect selected dispositions: `ready`, `blocked_selected`, `blocked_external`, `blocked_invalid_selected`, `completed_preexisting`, or `invalid`.
 3. Inspect boundary Issues and verified completion evidence.
 4. Review native edges, cycles, levels, batches, and ordered diagnostics.
 5. Require `Runnable: yes` before considering a later execution workflow. This package does not provide that workflow.
