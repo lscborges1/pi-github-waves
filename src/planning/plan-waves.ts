@@ -188,9 +188,7 @@ async function buildPlan(
       continue;
     }
     const foreign = dependencies.find(
-      (dependency) =>
-        !sameAscii(dependency.repositoryOwner, repository.owner) ||
-        !sameAscii(dependency.repositoryName, repository.name),
+      (dependency) => !belongsToRepository(dependency, repository),
     );
     if (foreign !== undefined) {
       diagnostics.push({
@@ -322,6 +320,13 @@ async function loadDependencies(
       }
       byIdentity.set(identity, dependency);
     }
+    if (
+      result.dependencies.some(
+        (dependency) => !belongsToRepository(dependency, repository),
+      )
+    ) {
+      return [...byIdentity.values()].sort(compareDependency);
+    }
     if (!result.hasNextPage) break;
     if (byIdentity.size === dependencyCount) {
       throw new AdapterError(
@@ -337,6 +342,16 @@ async function loadDependencies(
     if (boundaryNumbers.size + unseenBoundaryCount > MAX_BOUNDARY_NODES) break;
   }
   return [...byIdentity.values()].sort(compareDependency);
+}
+
+function belongsToRepository(
+  dependency: DependencySnapshot,
+  repository: RemoteRepositorySnapshot,
+): boolean {
+  return (
+    sameAscii(dependency.repositoryOwner, repository.owner) &&
+    sameAscii(dependency.repositoryName, repository.name)
+  );
 }
 
 async function loadCompletion(

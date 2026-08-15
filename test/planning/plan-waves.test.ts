@@ -535,6 +535,45 @@ describe("planWaves", () => {
     });
   });
 
+  test("should stop dependency pagination when a page contains a foreign blocker", async () => {
+    const dependencies = Array.from({ length: 100 }, (_, index) =>
+      dependencySnapshot(index + 2),
+    );
+    dependencies[99] = {
+      ...dependencySnapshot(101),
+      repositoryUrl: "https://api.github.com/repos/other/repository",
+      repositoryOwner: "other",
+      repositoryName: "repository",
+    };
+    const { ports, getBlockedBy } = fakePorts({
+      issues: new Map([[1, issue({ number: 1, nodeId: "issue-1" })]]),
+      dependencyPage: (_number, page) => {
+        if (page === 2) {
+          throw new AdapterError("process_failed", "unexpected second page");
+        }
+        return { dependencies, page, hasNextPage: true };
+      },
+    });
+
+    await expect(planWaves(input([1]), ports)).resolves.toMatchObject({
+      kind: "planned",
+      plan: {
+        graph: null,
+        runnable: false,
+        boundary: [],
+        edges: [],
+        diagnostics: [
+          expect.objectContaining({
+            code: "dependency_cross_repository",
+            issueNumber: 1,
+            details: { owner: "other", repository: "repository" },
+          }),
+        ],
+      },
+    });
+    expect(getBlockedBy).toHaveBeenCalledTimes(1);
+  });
+
   test("should reject dependency pagination when canonical identities do not advance", async () => {
     const dependencies = Array.from({ length: 100 }, (_, index) =>
       dependencySnapshot(index + 2),
