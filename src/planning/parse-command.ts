@@ -1,7 +1,13 @@
+import { z } from "zod";
+
 import { MAX_SELECTED_NODES } from "../graph/index.js";
 import type { PlanDiagnostic } from "./contracts.js";
 
-const ISSUE_TOKEN = /^#?([1-9]\d*)$/;
+const issueTokenSchema = z
+  .string()
+  .regex(/^#?[1-9]\d*$/u)
+  .transform((token) => Number(token.replace("#", "")))
+  .refine(Number.isSafeInteger);
 
 export type ParsePlanCommandOutcome =
   | {
@@ -29,11 +35,11 @@ export function parsePlanCommand(raw: string): ParsePlanCommandOutcome {
   const inputOrder: number[] = [];
   const occurrences = new Map<number, number>();
   for (const token of tokens) {
-    const match = ISSUE_TOKEN.exec(token);
-    const issueNumber = match?.[1] === undefined ? NaN : Number(match[1]);
-    if (!Number.isSafeInteger(issueNumber)) {
+    const result = issueTokenSchema.safeParse(token);
+    if (!result.success) {
       return invalid("invalid issue token");
     }
+    const issueNumber = result.data;
 
     if (!occurrences.has(issueNumber)) {
       inputOrder.push(issueNumber);
