@@ -53,6 +53,16 @@ test("should create a stable redacted unexpected-error signature", () => {
   expect(createUnexpectedErrorSignature(second)).toBe("6195152eb6f821be");
 });
 
+test("should reject a stack basename immediately following non-ASCII text", () => {
+  const error = new Error("secret adapter detail");
+  error.stack = [
+    "Error: secret adapter detail",
+    "    at plan (🔥index.js:42:7)",
+  ].join("\n");
+
+  expect(createUnexpectedErrorSignature(error)).toBe("d89b67893835a9f5");
+});
+
 test("should use a stable fallback when an unexpected value has no stack", () => {
   expect(createUnexpectedErrorSignature("secret thrown value")).toBe(
     createUnexpectedErrorSignature({ secret: "different" }),

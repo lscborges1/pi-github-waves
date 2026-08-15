@@ -24,7 +24,7 @@ import {
 const ENTRY_TYPE = "waves-plan";
 const STATUS_KEY = "github-waves";
 const SAFE_ERROR_NAME = /^[A-Za-z][A-Za-z0-9]{0,63}$/u;
-const STACK_FRAME_LOCATION = /([A-Za-z0-9._-]+:\d+:\d+)\)?$/u;
+const STACK_FRAME_LOCATION = /(?:^|[\s(/\\])([A-Za-z0-9._-]+:\d+:\d+)\)?$/u;
 const MAX_SIGNATURE_FRAMES = 5;
 
 export type WavesPlanEntry = RenderedPlan;
