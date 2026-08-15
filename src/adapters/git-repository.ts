@@ -3,6 +3,7 @@ import { isAbsolute } from "node:path";
 import { z } from "zod";
 
 import { AdapterError } from "../planning/adapter-error.js";
+import { githubIdentitySchema } from "./github-identity.js";
 import type {
   DiscoveredRepository,
   RepositoryPort,
@@ -14,8 +15,6 @@ import {
   type RunProcessOptions,
 } from "./run-process.js";
 
-const COMPONENT = /^[A-Za-z0-9_.-]+$/u;
-const OWNER = /^[A-Za-z0-9-]+$/u;
 const insideWorktreeSchema = z
   .string()
   .transform((value) => value.trim())
@@ -186,17 +185,11 @@ function validateIdentity(
   owner: string | undefined,
   name: string | undefined,
 ): { readonly owner: string; readonly name: string } {
-  if (
-    owner === undefined ||
-    name === undefined ||
-    !OWNER.test(owner) ||
-    !COMPONENT.test(name) ||
-    name === "." ||
-    name === ".."
-  ) {
+  const identity = githubIdentitySchema.safeParse({ owner, name });
+  if (!identity.success) {
     throw unsupported("repository origin URL is unsupported");
   }
-  return { owner, name };
+  return identity.data;
 }
 
 function unsupported(message: string): AdapterError {

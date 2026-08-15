@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { AdapterError } from "../planning/adapter-error.js";
+import { githubIdentitySchema } from "./github-identity.js";
 import type {
   ClosureEventPage,
   ClosureEventSnapshot,
@@ -445,22 +446,21 @@ function parseDependency(
     );
   }
   const match = /^\/repos\/([^/]+)\/([^/]+)$/u.exec(url.pathname);
+  const identity =
+    match === null
+      ? null
+      : githubIdentitySchema.safeParse({ owner: match[1], name: match[2] });
   if (
     url.protocol !== "https:" ||
     url.hostname.toLowerCase() !== "api.github.com" ||
     url.port !== "" ||
+    url.username !== "" ||
+    url.password !== "" ||
     url.search !== "" ||
     url.hash !== "" ||
-    match === null
+    identity === null ||
+    !identity.success
   ) {
-    throw new AdapterError(
-      "invalid_response",
-      "GitHub returned an invalid dependency repository URL",
-    );
-  }
-  const repositoryOwner = match[1];
-  const repositoryName = match[2];
-  if (repositoryOwner === undefined || repositoryName === undefined) {
     throw new AdapterError(
       "invalid_response",
       "GitHub returned an invalid dependency repository URL",
@@ -468,8 +468,8 @@ function parseDependency(
   }
   return {
     repositoryUrl: raw.repository_url,
-    repositoryOwner,
-    repositoryName,
+    repositoryOwner: identity.data.owner,
+    repositoryName: identity.data.name,
     issueNodeId: raw.node_id,
     number: raw.number,
   };

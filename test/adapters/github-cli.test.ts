@@ -150,6 +150,32 @@ describe("createGitHubReadPort", () => {
     expect(runner.mock.calls[0]?.[1]).toContain("--jq");
   });
 
+  test.each([
+    ["credentials", "https://token@api.github.com/repos/acme/waves"],
+    ["a percent-encoded owner", "https://api.github.com/repos/ac%6de/waves"],
+    [
+      "a percent-encoded repository",
+      "https://api.github.com/repos/acme/wav%65s",
+    ],
+  ] as const)(
+    "should reject dependency repository URLs with %s",
+    async (_description, repositoryUrl) => {
+      const runner = fixedRunner(
+        jsonResult([
+          {
+            repository_url: repositoryUrl,
+            node_id: "issue-1",
+            number: 1,
+          },
+        ]),
+      );
+
+      await expect(
+        port(runner).getBlockedBy("acme", "waves", 7, 1),
+      ).rejects.toMatchObject({ code: "invalid_response" });
+    },
+  );
+
   test("should preserve closure connection order and pull request evidence", async () => {
     const runner = fixedRunner(
       jsonResult({
