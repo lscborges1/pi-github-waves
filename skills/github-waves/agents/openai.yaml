@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Waves"
+  short_description: "Plan read-only GitHub dependency waves"
+  default_prompt: "Use $github-waves to validate issues and preview their dependency waves."
